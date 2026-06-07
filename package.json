@@ -1,0 +1,59 @@
+{
+  "name": "vktech",
+  "version": "1.0.0",
+  "description": "Multi-provider AI analysis CLI & library (OpenAI, Gemini, xAI) that hands code implementation off to Claude Code.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "vktech": "./src/cli.js"
+  },
+  "files": [
+    "src/",
+    "templates/",
+    ".env.example",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "start": "node ./src/cli.js",
+    "vktech": "node ./src/cli.js",
+    "test": "node --check src/cli.js && node --check src/index.js && node --check src/providers.js && node --check src/templates.js && node --check src/industry.js && node --check src/claude.js && node --check src/run.js",
+    "prepublishOnly": "npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "openai",
+    "gemini",
+    "grok",
+    "xai",
+    "claude",
+    "claude-code",
+    "code-review",
+    "code-analysis",
+    "audit",
+    "repl",
+    "llm"
+  ],
+  "author": "Kwasi Kabiro <hello@vktech.ai> (https://vktech.ai)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visionkraftconsulting/vktech-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/visionkraftconsulting/vktech-cli/issues"
+  },
+  "homepage": "https://vktech.ai",
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
