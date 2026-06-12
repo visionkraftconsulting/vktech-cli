@@ -2,6 +2,7 @@
 // Each provider exposes async ask({ prompt, system, model, signal }) -> string.
 // Uses native global fetch (Node >=18).
 import { codexEnabled, askCodex } from "./codex.js";
+export { codexEnabled };
 
 const DEFAULTS = {
   openai: process.env.OPENAI_MODEL || "gpt-5",

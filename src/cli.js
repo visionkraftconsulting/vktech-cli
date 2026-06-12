@@ -27,7 +27,7 @@ for (const path of ENV_SOURCES) {
   if (existsSync(path)) dotenv.config({ path });
 }
 
-const { ask, askAll, availableProviders, PROVIDERS, DEFAULTS, resolveProvider } = await import("./providers.js");
+const { ask, askAll, availableProviders, PROVIDERS, DEFAULTS, resolveProvider, codexEnabled } = await import("./providers.js");
 const { runClaude } = await import("./claude.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
@@ -515,9 +515,17 @@ function showProviders() {
     ["Gemini", "GEMINI_API_KEY", DEFAULTS.gemini],
     ["xAI",    "XAI_API_KEY",    DEFAULTS.xai],
   ];
+  const codex = codexEnabled();
   for (const [name, env, model] of rows) {
-    const ok = !!process.env[env];
-    const status = ok ? color("green", "✓ key set") : color("red", "✗ no key");
+    // In Codex mode OpenAI is served by the `codex` CLI (its own auth), so an
+    // OPENAI_API_KEY is irrelevant — show the backend instead of key status.
+    let status;
+    if (name === "OpenAI" && codex) {
+      status = color("green", "via codex CLI");
+    } else {
+      const ok = !!process.env[env];
+      status = ok ? color("green", "✓ key set") : color("red", "✗ no key");
+    }
     console.log(`  ${name.padEnd(8)} ${status.padEnd(20)} ${color("dim", model)}`);
   }
   const claudeBin = process.env.CLAUDE_BIN || "claude";
