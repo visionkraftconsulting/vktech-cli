@@ -22,7 +22,7 @@
   "scripts": {
     "start": "node ./src/cli.js",
     "vktech": "node ./src/cli.js",
-    "test": "node --check src/cli.js && node --check src/index.js && node --check src/providers.js && node --check src/templates.js && node --check src/industry.js && node --check src/claude.js && node --check src/run.js",
+    "test": "node --check src/cli.js && node --check src/index.js && node --check src/providers.js && node --check src/codex.js && node --check src/templates.js && node --check src/industry.js && node --check src/claude.js && node --check src/run.js",
     "prepublishOnly": "npm test"
   },
   "engines": {

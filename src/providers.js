@@ -1,6 +1,7 @@
 // Provider router for vktech.
 // Each provider exposes async ask({ prompt, system, model, signal }) -> string.
 // Uses native global fetch (Node >=18).
+import { codexEnabled, askCodex } from "./codex.js";
 
 const DEFAULTS = {
   openai: process.env.OPENAI_MODEL || "gpt-5",
@@ -167,8 +168,13 @@ async function streamOnce({ url, key, model, prompt, system, signal }) {
 // Use streaming once the prompt is large enough that a single response may be slow.
 const STREAM_THRESHOLD = Number(process.env.VKTECH_STREAM_THRESHOLD || 60_000);
 
-// ---- OpenAI (Chat Completions) ----
+// ---- OpenAI (Chat Completions, or Codex CLI when OPENAI_BACKEND=codex) ----
 async function askOpenAI({ prompt, system, model, signal }) {
+  // Subscription path: serve OpenAI via the Codex CLI (uses a ChatGPT login
+  // when `codex` is signed in that way) instead of the billed HTTP API.
+  if (codexEnabled()) {
+    return askCodex({ prompt, system, model, signal });
+  }
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY is not set in .env");
   const url = "https://api.openai.com/v1/chat/completions";
@@ -254,9 +260,14 @@ export async function ask({ modelArg, prompt, system, signal }) {
 }
 
 // Which providers have a key configured (i.e. are actually runnable).
+// OpenAI is also runnable in Codex mode (OPENAI_BACKEND=codex), which uses the
+// `codex` CLI's own auth (a ChatGPT login) instead of OPENAI_API_KEY.
 const KEY_ENV = { openai: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY", xai: "XAI_API_KEY" };
 export function availableProviders() {
-  return Object.keys(IMPL).filter((p) => !!process.env[KEY_ENV[p]]);
+  return Object.keys(IMPL).filter((p) => {
+    if (p === "openai" && codexEnabled()) return true;
+    return !!process.env[KEY_ENV[p]];
+  });
 }
 
 // Run the prompt against EVERY configured provider (or a given subset) in parallel.
