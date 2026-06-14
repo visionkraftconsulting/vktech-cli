@@ -34,6 +34,7 @@ const { detectIndustry, INDUSTRIES } = await import("./industry.js");
 const { readSnippet, runLocalJs, runLocalShell, runRemote } = await import("./run.js");
 const { runEdit } = await import("./edit/index.js");
 const { loadConfig } = await import("./edit/config.js");
+const { upsertA, removeA, isLicensed } = await import("./edit/cloudflare.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -456,6 +457,7 @@ ${color("bold", "USAGE")}
   vktech audit --list                List available audit templates
   vktech edit --config job.json      Automated video edit (probe→plan→dark-scan→caption→render)
   vktech edit -d <dir> -o <out.mp4>  Edit a folder of clips with flags (--preset, --captions, --dry-run)
+  vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
@@ -704,6 +706,41 @@ function defaultTemplateName() {
     if (raw.includes("default: true")) return t.name;
   }
   return tpls[0]?.name || null;
+}
+
+// `vktech dns` — provision Cloudflare DNS for a published site/preview (paid).
+//   vktech dns publish <subdomain> --ip <addr> [--dns-only]
+//   vktech dns remove  <subdomain>
+async function doDns(argv) {
+  const action = argv[0];
+  const name = argv[1];
+  let ip = null, proxied = true;
+  for (let i = 2; i < argv.length; i++) {
+    if (argv[i] === "--ip") ip = argv[++i];
+    else if (argv[i] === "--dns-only") proxied = false;
+  }
+  if (!["publish", "remove"].includes(action) || !name) {
+    console.error(color("red", "Usage: vktech dns publish <subdomain> --ip <addr> [--dns-only]   |   vktech dns remove <subdomain>"));
+    process.exit(1);
+  }
+  if (!isLicensed()) {
+    console.error(color("red", "Cloudflare publishing is a paid feature. Set VKTECH_LICENSE (or VKTECH_PRO=1) in your vktech env."));
+    process.exit(1);
+  }
+  try {
+    if (action === "publish") {
+      if (!ip) { console.error(color("red", "publish requires --ip <addr>")); process.exit(1); }
+      const r = await upsertA(name, ip, { proxied });
+      console.log(color("green", `✓ ${r.action} ${r.name} → ${r.content}`) + color("grey", ` (proxied=${r.proxied})`));
+    } else {
+      const r = await removeA(name);
+      console.log(color("green", `✓ ${r.action} ${r.name}`));
+    }
+  } catch (e) {
+    console.error(color("red", `\nDNS failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 // `vktech edit` — automated video-editing engine. Config-driven, zero prompts.
@@ -1035,6 +1072,7 @@ async function main() {
   if (cmd === "run" || cmd === "sh" || cmd === "remote") return doRun(cmd, argv.slice(1));
   if (cmd === "audit") return doAudit(argv.slice(1));
   if (cmd === "edit") return doEdit(argv.slice(1));
+  if (cmd === "dns") return doDns(argv.slice(1));
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));
