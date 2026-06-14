@@ -145,3 +145,46 @@ macOS-only; Linux hosts fall back to libx265/libx264 automatically.
   `facts_file` as context) — the engine will not invent them.
 - **Determinism**: same config + same input → same plan. Vision caption *text* varies
   per run; use `captions.mode: "off"` or override-only for byte-stable output.
+
+## Music & audio (questionnaire)
+
+Identify music in any file, and add your own track to an edit.
+
+### `vktech identify`
+```bash
+vktech identify ./service.mp4            # scan for music -> tracks + timestamps + ISRC
+vktech identify ./clip.wav --json        # machine-readable
+```
+Uses Shazam. Reports each recognized track with its time range and ISRC (so you
+can source a high-quality master). Speech windows report "no match".
+
+### Adding your own track when editing (`config.audio`)
+
+Upload a music file and choose how it's applied — the "audio questionnaire":
+
+| `audio.mode` | what it does |
+|---|---|
+| `off` | keep original clip audio (default) |
+| `replace_all` | your track becomes the whole soundtrack (loops to fill) |
+| `bed` | your track plays quietly **under** the original voices (`bed_gain_db`) |
+| `opening` | your track replaces only the opening, then crossfades into the original audio |
+
+```jsonc
+"audio": {
+  "track": "./simple-man.mp3",
+  "mode": "opening",          // off | replace_all | bed | opening
+  "opening_sec": 140,         // opening: how long the track covers
+  "sync_offset_sec": 55,      // start this far into the track (reliable alignment)
+  "sync": "none",             // or "auto" — best-effort match to existing in-room music (verify it)
+  "loop": true,               // replace_all/bed: loop to cover runtime
+  "bed_gain_db": -16,         // bed: how far under the voices
+  "crossfade_sec": 2, "fade_in_sec": 1.5, "fade_out_sec": 2
+}
+```
+CLI shortcuts: `--audio <file> --audio-mode opening --audio-opening 140`,
+`--audio-sync auto`, `--audio-bed-db -18`, `--no-audio-loop`.
+
+**Sync tip:** to swap a phone-recorded song for its studio master, set
+`sync_offset_sec` to where the recording starts in the master (use `vktech
+identify` + a quick listen). `sync: "auto"` will *estimate* it but always
+verify — acoustic differences make auto-alignment approximate.

@@ -13,7 +13,19 @@ const DEFAULTS = {
   concurrency: 0,        // 0 = auto (per-encoder default); N = parallel segment encodes
   tone_preset: "neutral",
   encoder: "auto",
-  audio: { loudnorm: "I=-16:TP=-1.5:LRA=11", bitrate: "192k", rate: 48000, channels: 2 },
+  // Per-segment loudness/encode + optional user music track (the "audio
+  // questionnaire"): track + mode (off|replace_all|bed|opening) + how to fit it.
+  audio: {
+    loudnorm: "I=-16:TP=-1.5:LRA=11", bitrate: "192k", rate: 48000, channels: 2,
+    track: null,               // path to user-uploaded music (mp3/wav)
+    mode: "off",               // off | replace_all | bed | opening
+    loop: true,                // replace_all/bed: loop to cover runtime
+    bed_gain_db: -16,          // bed: how far under the voices
+    opening_sec: 120,          // opening: seconds the track covers
+    sync: "none",              // none | auto (best-effort cross-correlate to in-room music)
+    sync_offset_sec: null,     // explicit, reliable: where in the track to start (overrides sync)
+    crossfade_sec: 2, fade_in_sec: 1.5, fade_out_sec: 2,
+  },
   long_clip_threshold_sec: 600,
   window_sec: 240,
   dark: { mode: "cut", threshold: 24, min_span_sec: 1.5 },
@@ -59,6 +71,7 @@ export function loadConfig(configPath, overrides = {}) {
   cfg.output = abs(cfg.output, baseDir);
   cfg.work_dir = abs(cfg.work_dir || (cfg.output ? join(dirname(cfg.output), "_vkedit_work") : null), baseDir);
   if (cfg.captions) cfg.captions.facts_file = abs(cfg.captions.facts_file, baseDir);
+  if (cfg.audio) cfg.audio.track = abs(cfg.audio.track, baseDir);
 
   // Derive resolution from aspect unless explicitly provided. fps from cfg.fps.
   if (!cfg.resolution) {
@@ -82,6 +95,12 @@ export function loadConfig(configPath, overrides = {}) {
   if (!["pad", "crop"].includes(cfg.fit)) errs.push('fit must be pad|crop');
   if (!["cut", "flag", "off"].includes(cfg.dark.mode)) errs.push('dark.mode must be cut|flag|off');
   if (!["vision", "metadata", "off"].includes(cfg.captions.mode)) errs.push('captions.mode must be vision|metadata|off');
+  if (!["off", "replace_all", "bed", "opening"].includes(cfg.audio.mode)) errs.push('audio.mode must be off|replace_all|bed|opening');
+  if (cfg.audio.mode !== "off") {
+    if (!cfg.audio.track) errs.push(`audio.mode="${cfg.audio.mode}" requires audio.track (path to a music file)`);
+    else if (!existsSync(cfg.audio.track)) errs.push(`audio.track not found: ${cfg.audio.track}`);
+    if (!["none", "auto"].includes(cfg.audio.sync)) errs.push('audio.sync must be none|auto');
+  }
   if (!cfg.resolution || !(cfg.resolution.w > 0 && cfg.resolution.h > 0 && cfg.resolution.fps > 0)) errs.push("resolution w/h/fps must be positive");
   if (cfg.captions.mode === "metadata" && !(cfg.captions.overrides || []).length)
     errs.push("captions.mode=metadata requires captions.overrides");

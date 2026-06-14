@@ -10,6 +10,7 @@ import { buildSegments, concat } from "./render.js";
 import { gradeFilter } from "./presets.js";
 import { pickEncoder, ffmpeg } from "./ffmpeg.js";
 import { verify } from "./verify.js";
+import { applyAudio } from "./audio.js";
 
 const noop = () => {};
 
@@ -91,6 +92,17 @@ export async function runEdit(cfg, { log = {}, signal } = {}) {
     await ffmpeg(["-loglevel", "error", "-y", "-i", master, "-c", "copy", "-movflags", "+faststart", finalPath], { signal });
   }
 
+  // Stage 7.5 — apply user music track (questionnaire): replace_all|bed|opening.
+  let audioApplied = "off";
+  if (cfg.audio && cfg.audio.mode && cfg.audio.mode !== "off" && cfg.audio.track) {
+    L.step("Applying music track…");
+    const withAudio = join(cfg.work_dir, "with_audio.mp4");
+    await applyAudio(finalPath, withAudio, cfg, { log: L, signal });
+    // promote the audio-applied file to the output path
+    await ffmpeg(["-loglevel", "error", "-y", "-i", withAudio, "-c", "copy", "-movflags", "+faststart", finalPath], { signal });
+    audioApplied = cfg.audio.mode;
+  }
+
   // Stage 8 — verify
   L.step("Verifying integrity…");
   const v = await verify(finalPath, { signal });
@@ -100,6 +112,6 @@ export async function runEdit(cfg, { log = {}, signal } = {}) {
   return {
     output: finalPath, planPath, segments: plan.length,
     runtimeSec: totalRuntime(plan), encoder: encInfo.name,
-    captions: cards.length, verified: v.ok, decodeErrors: v.count,
+    captions: cards.length, audio: audioApplied, verified: v.ok, decodeErrors: v.count,
   };
 }

@@ -35,6 +35,7 @@ const { readSnippet, runLocalJs, runLocalShell, runRemote } = await import("./ru
 const { runEdit } = await import("./edit/index.js");
 const { loadConfig } = await import("./edit/config.js");
 const { upsertA, removeA, isLicensed } = await import("./edit/cloudflare.js");
+const { identify, fmt } = await import("./edit/identify.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -456,7 +457,8 @@ ${color("bold", "USAGE")}
   vktech audit <t> --all -d <dir>    Run ALL providers, consolidate for Claude
   vktech audit --list                List available audit templates
   vktech edit --config job.json      Automated video edit (probe→plan→dark-scan→caption→render)
-  vktech edit -d <dir> -o <out.mp4>  Edit a folder of clips with flags (--preset, --captions, --dry-run)
+  vktech edit -d <dir> -o <out.mp4>  Edit clips (--preset, --captions, --audio <track> --audio-mode …, --dry-run)
+  vktech identify <file>             Recognize music in an audio/video file (Shazam)
   vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
@@ -708,6 +710,43 @@ function defaultTemplateName() {
   return tpls[0]?.name || null;
 }
 
+// `vktech identify` — recognize music in an audio/video file via Shazam.
+//   vktech identify <file> [--step N] [--win N] [--json]
+async function doIdentify(argv) {
+  let file = null, step = 40, win = 12, asJson = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--step") step = Number(argv[++i]);
+    else if (a === "--win") win = Number(argv[++i]);
+    else if (a === "--json") asJson = true;
+    else if (!a.startsWith("-")) file = a;
+  }
+  if (!file) { console.error(color("red", "Usage: vktech identify <audio|video file> [--step 40] [--win 12] [--json]")); process.exit(1); }
+  if (!existsSync(file)) { console.error(color("red", `file not found: ${file}`)); process.exit(1); }
+
+  const log = asJson ? null : { info: (m) => console.log(color("grey", m)), warn: (m) => console.log(color("yellow", m)) };
+  if (!asJson) console.log(color("chrome", "vktech identify") + color("grey", `  scanning ${file}…`));
+  try {
+    const res = await identify(file, { step, win, log });
+    if (asJson) { console.log(JSON.stringify(res, null, 2)); process.exit(0); }
+    console.log("");
+    if (!res.hits.length) {
+      console.log(color("yellow", "No music recognized (likely speech or silence)."));
+    } else {
+      console.log(color("heading", `Identified ${res.hits.length} track(s):`));
+      for (const h of res.hits) {
+        console.log(color("green", `  ♪ ${h.title} — ${h.artist}`) + color("grey", `   [${fmt(h.at)}–${fmt(h.end)}]`));
+        if (h.isrc) console.log(color("grey", `     ISRC ${h.isrc}`) + (h.url ? color("grey", ` · ${h.url}`) : ""));
+        else if (h.url) console.log(color("grey", `     ${h.url}`));
+      }
+    }
+  } catch (e) {
+    console.error(color("red", `\nidentify failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 // `vktech dns` — provision Cloudflare DNS for a published site/preview (paid).
 //   vktech dns publish <subdomain> --ip <addr> [--dns-only]
 //   vktech dns remove  <subdomain>
@@ -761,7 +800,16 @@ async function doEdit(argv) {
     else if (a === "--dark") ov.dark = { mode: argv[++i] };
     else if (a === "--dry-run") ov.dry_run = true;
     else if (a === "--runtime") ov.target_runtime_sec = Number(argv[++i]);
+    // Audio questionnaire flags (music track).
+    else if (a === "--audio") { (ov.audio ??= {}).track = argv[++i]; }
+    else if (a === "--audio-mode") { (ov.audio ??= {}).mode = argv[++i]; }   // replace_all|bed|opening
+    else if (a === "--audio-sync") { (ov.audio ??= {}).sync = argv[++i]; }   // auto|none
+    else if (a === "--audio-opening") { (ov.audio ??= {}).opening_sec = Number(argv[++i]); }
+    else if (a === "--audio-bed-db") { (ov.audio ??= {}).bed_gain_db = Number(argv[++i]); }
+    else if (a === "--no-audio-loop") { (ov.audio ??= {}).loop = false; }
   }
+  // A bare --audio with no explicit mode defaults to a full soundtrack.
+  if (ov.audio && ov.audio.track && !ov.audio.mode) ov.audio.mode = "replace_all";
   // Paid gate: rendering requires a license. --dry-run (plan only) stays free
   // so prospects can evaluate the cut before buying.
   if (!ov.dry_run && !isLicensed()) {
@@ -800,7 +848,7 @@ async function doEdit(argv) {
       console.log(color("grey", `  plan: ${res.planPath}`));
     } else {
       console.log(color("green", `\n✓ Done: ${res.output}`));
-      console.log(color("grey", `  ${(res.runtimeSec / 60).toFixed(1)} min · ${res.segments} segments · ${res.encoder} · ${res.captions} captions · ${res.verified ? "verified" : res.decodeErrors + " decode errors"}`));
+      console.log(color("grey", `  ${(res.runtimeSec / 60).toFixed(1)} min · ${res.segments} segments · ${res.encoder} · ${res.captions} captions · audio:${res.audio} · ${res.verified ? "verified" : res.decodeErrors + " decode errors"}`));
     }
   } catch (e) {
     spin.stop();
@@ -1081,6 +1129,7 @@ async function main() {
   if (cmd === "audit") return doAudit(argv.slice(1));
   if (cmd === "edit") return doEdit(argv.slice(1));
   if (cmd === "dns") return doDns(argv.slice(1));
+  if (cmd === "identify") return doIdentify(argv.slice(1));
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));
