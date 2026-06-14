@@ -27,7 +27,7 @@ for (const path of ENV_SOURCES) {
   if (existsSync(path)) dotenv.config({ path });
 }
 
-const { ask, askAll, availableProviders, PROVIDERS, DEFAULTS, resolveProvider } = await import("./providers.js");
+const { ask, askVision, askAll, availableProviders, PROVIDERS, DEFAULTS, resolveProvider } = await import("./providers.js");
 const { runClaude } = await import("./claude.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
@@ -447,6 +447,7 @@ ${color("bold", "vktech")} v${version()} — analyze with OpenAI / Gemini / xAI,
 ${color("bold", "USAGE")}
   vktech                              Start interactive REPL
   vktech ask --model <m> "<prompt>"  One-shot analysis with a provider
+  vktech ask -i <img> "<prompt>"     Vision analysis (grok › claude › openai)
   vktech audit [template] [-d dir]   Run a saved audit template over a project
   vktech audit auto -d <dir>         Auto-detect industry, pick template+frameworks
   vktech audit <t> --all -d <dir>    Run ALL providers, consolidate for Claude
@@ -475,6 +476,8 @@ ${color("bold", "AUDIT TEMPLATES")} (vktech audit --list for the full set)
 ${color("bold", "EXAMPLES")}
   vktech ask -m gpt-5 "Review this function for race conditions: $(cat foo.js)"
   vktech ask -m gemini "Suggest an architecture for a job queue"
+  vktech ask -i screenshot.png "Analyze this page's theme and color palette"
+  vktech ask -i a.png -i b.png "Compare these two layouts"
   vktech audit hipaa-iso -d ./my-app -o report.md
   vktech code "Implement the fixes Grok suggested in src/order.js"
 
@@ -528,18 +531,70 @@ function showProviders() {
   console.log(`  ${color("dim", "theme:")} ${color("accent", THEME_NAME)} ${color("dim", "(VKTECH_THEME=violet|coral)")}\n`);
 }
 
-// Parse "--model x" / "-m x" out of an argv array, return { model, rest }.
+// Parse "--model x"/"-m x" and "--image path"/"-i path" (repeatable) out of an
+// argv array, return { model, images: string[], rest }.
 function extractModel(argv) {
   let model = null;
+  const images = [];
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--model" || argv[i] === "-m") {
       model = argv[++i];
+    } else if (argv[i] === "--image" || argv[i] === "-i") {
+      const p = argv[++i];
+      if (p) images.push(p);
     } else {
       rest.push(argv[i]);
     }
   }
-  return { model, rest };
+  return { model, images, rest };
+}
+
+// Load image files into [{ mime, dataB64 }] for the vision API.
+function loadImages(paths) {
+  const MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp",
+  };
+  return paths.map((p) => {
+    if (!existsSync(p)) {
+      console.error(color("red", `Error: image not found: ${p}`));
+      process.exit(1);
+    }
+    const ext = p.slice(p.lastIndexOf(".")).toLowerCase();
+    const mime = MIME[ext];
+    if (!mime) {
+      console.error(color("red", `Error: unsupported image type "${ext}" (use png/jpg/gif/webp): ${p}`));
+      process.exit(1);
+    }
+    return { mime, dataB64: readFileSync(p).toString("base64") };
+  });
+}
+
+async function doAskVision(model, images, prompt) {
+  if (!prompt) {
+    console.error(color("red", "Error: no prompt provided."));
+    process.exit(1);
+  }
+  const imgs = loadImages(images);
+  const spin = startSpinner(`analyzing ${imgs.length} image${imgs.length === 1 ? "" : "s"}…`);
+  const t0 = Date.now();
+  try {
+    const { provider, model: usedModel, text } = await askVision({
+      modelArg: model || null,
+      prompt,
+      system: ANALYSIS_SYSTEM,
+      images: imgs,
+    });
+    spin.stop();
+    console.log(color("cyan", `\n[${provider}:${usedModel} · vision]\n`));
+    console.log(text + "\n");
+    statusFooter({ provider, model: usedModel, ms: Date.now() - t0, chars: text.length });
+  } catch (err) {
+    spin.stop();
+    console.error(color("red", `\nVision error: ${err.message}\n`));
+    process.exit(1);
+  }
 }
 
 async function doAsk(model, prompt) {
@@ -918,7 +973,8 @@ async function main() {
   if (cmd === "audit") return doAudit(argv.slice(1));
 
   if (cmd === "ask") {
-    const { model, rest } = extractModel(argv.slice(1));
+    const { model, images, rest } = extractModel(argv.slice(1));
+    if (images.length) return doAskVision(model, images, rest.join(" "));
     return doAsk(model, rest.join(" "));
   }
 

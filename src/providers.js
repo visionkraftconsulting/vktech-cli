@@ -9,6 +9,22 @@ const DEFAULTS = {
   anthropic: process.env.ANTHROPIC_MODEL || "claude-opus-4-8",
 };
 
+// Vision-capable model per provider (used by `ask --image`). Separate from the
+// text DEFAULTS because not every text model accepts images. Override via env.
+const VISION_DEFAULTS = {
+  xai: process.env.XAI_VISION_MODEL || "grok-4.3",
+  anthropic: process.env.ANTHROPIC_VISION_MODEL || "claude-opus-4-8",
+  openai: process.env.OPENAI_VISION_MODEL || "gpt-5",
+};
+
+// Fallback order for vision requests: Grok first, Claude second, OpenAI third.
+// (Gemini is omitted — order set per product requirement.) Override via
+// VKTECH_VISION_PRIORITY="anthropic,openai,xai".
+const VISION_PRIORITY = (process.env.VKTECH_VISION_PRIORITY
+  ? process.env.VKTECH_VISION_PRIORITY.split(",").map((s) => s.trim()).filter(Boolean)
+  : ["xai", "anthropic", "openai"]);
+export { VISION_PRIORITY };
+
 // Map user-typed aliases to a canonical provider key.
 const ALIASES = {
   openai: "openai",
@@ -278,6 +294,120 @@ async function askAnthropic({ prompt, system, model, signal }) {
   return parts.map((p) => p.text || "").join("").trim() || "(empty response)";
 }
 
+// Which env var holds each provider's API key (also used by availableProviders).
+const KEY_ENV = {
+  openai: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  xai: "XAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+};
+
+// ---- Vision (image input) ----------------------------------------------
+// Each takes images: [{ mime, dataB64 }]. xAI + OpenAI share the Chat
+// Completions image_url shape; Anthropic uses its own image block.
+async function visionOpenAICompatible({ url, key, model, prompt, system, images, signal }) {
+  const content = [
+    { type: "text", text: prompt },
+    ...images.map((img) => ({
+      type: "image_url",
+      image_url: { url: `data:${img.mime};base64,${img.dataB64}` },
+    })),
+  ];
+  const body = await httpJson(url, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        ...(system ? [{ role: "system", content: system }] : []),
+        { role: "user", content },
+      ],
+    }),
+  });
+  return body?.choices?.[0]?.message?.content?.trim() || "(empty response)";
+}
+
+async function askXaiVision({ prompt, system, model, images, signal }) {
+  const key = process.env.XAI_API_KEY;
+  if (!key) throw new Error("XAI_API_KEY is not set in .env");
+  return visionOpenAICompatible({
+    url: "https://api.x.ai/v1/chat/completions",
+    key, model, prompt, system, images, signal,
+  });
+}
+
+async function askOpenAIVision({ prompt, system, model, images, signal }) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("OPENAI_API_KEY is not set in .env");
+  return visionOpenAICompatible({
+    url: "https://api.openai.com/v1/chat/completions",
+    key, model, prompt, system, images, signal,
+  });
+}
+
+async function askAnthropicVision({ prompt, system, model, images, signal }) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error("ANTHROPIC_API_KEY is not set in .env");
+  const content = [
+    ...images.map((img) => ({
+      type: "image",
+      source: { type: "base64", media_type: img.mime, data: img.dataB64 },
+    })),
+    { type: "text", text: prompt },
+  ];
+  const body = await httpJson("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 8192),
+      ...(system ? { system } : {}),
+      messages: [{ role: "user", content }],
+    }),
+  });
+  const parts = body?.content || [];
+  return parts.map((p) => p.text || "").join("").trim() || "(empty response)";
+}
+
+const VISION_IMPL = { xai: askXaiVision, anthropic: askAnthropicVision, openai: askOpenAIVision };
+
+// Run a vision prompt, trying providers in VISION_PRIORITY (grok→claude→openai)
+// until one with a configured key succeeds. Returns { provider, model, text }.
+// `images` is [{ mime, dataB64 }]. Throws only if every configured provider fails.
+export async function askVision({ prompt, system, images, modelArg, signal }) {
+  if (!images || !images.length) throw new Error("askVision requires at least one image");
+  // Explicit --model picks the provider; otherwise cascade.
+  const order = modelArg
+    ? [resolveProvider(modelArg)].filter((p) => p && VISION_IMPL[p])
+    : VISION_PRIORITY.filter((p) => VISION_IMPL[p] && process.env[KEY_ENV[p]]);
+  if (!order.length) {
+    throw new Error(
+      "No vision-capable provider configured. Set one of XAI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY."
+    );
+  }
+  const errors = [];
+  for (const provider of order) {
+    if (!process.env[KEY_ENV[provider]]) { errors.push(`${provider}: no key`); continue; }
+    const model = modelArg && resolveProvider(modelArg) === provider
+      ? modelIdFor(provider, modelArg)
+      : VISION_DEFAULTS[provider];
+    try {
+      const text = await VISION_IMPL[provider]({ prompt, system, model, images, signal });
+      return { provider, model, text };
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      errors.push(`${provider} (${model}): ${e.message}`);
+    }
+  }
+  throw new Error(`All vision providers failed:\n  ${errors.join("\n  ")}`);
+}
+
 const IMPL = { openai: askOpenAI, gemini: askGemini, xai: askXai, anthropic: askAnthropic };
 
 export async function ask({ modelArg, prompt, system, signal }) {
@@ -292,13 +422,6 @@ export async function ask({ modelArg, prompt, system, signal }) {
   return { provider, model, text: out };
 }
 
-// Which providers have a key configured (i.e. are actually runnable).
-const KEY_ENV = {
-  openai: "OPENAI_API_KEY",
-  gemini: "GEMINI_API_KEY",
-  xai: "XAI_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-};
 // Runnable providers, returned in PRIORITY order (entries not in PRIORITY trail after).
 export function availableProviders() {
   const runnable = Object.keys(IMPL).filter((p) => !!process.env[KEY_ENV[p]]);
