@@ -460,10 +460,11 @@ ${color("bold", "USAGE")}
   vktech --help                      This help
   vktech --version
 
-${color("bold", "MODELS")} (for --model / -m)
-  ${color("cyan", "gpt-5, openai")}   -> OpenAI    (${DEFAULTS.openai})
-  ${color("cyan", "gemini, google")}  -> Gemini    (${DEFAULTS.gemini})
-  ${color("cyan", "grok, xai")}       -> xAI       (${DEFAULTS.xai})
+${color("bold", "MODELS")} (for --model / -m — default priority: grok › claude › openai)
+  ${color("cyan", "grok, xai")}       -> xAI         (${DEFAULTS.xai})        [default]
+  ${color("cyan", "claude")}          -> Anthropic   (${DEFAULTS.anthropic})
+  ${color("cyan", "gpt-5, openai")}   -> OpenAI      (${DEFAULTS.openai})
+  ${color("cyan", "gemini, google")}  -> Gemini      (${DEFAULTS.gemini})
   You may also pass an explicit id, e.g. --model gpt-4o
 
 ${color("bold", "AUDIT TEMPLATES")} (vktech audit --list for the full set)
@@ -510,15 +511,17 @@ ${color("bold", "THEME")}
 
 function showProviders() {
   console.log(color("bold", "\nConfigured providers:\n"));
+  // Listed in default priority order: grok › claude › openai › gemini.
   const rows = [
-    ["OpenAI", "OPENAI_API_KEY", DEFAULTS.openai],
-    ["Gemini", "GEMINI_API_KEY", DEFAULTS.gemini],
-    ["xAI",    "XAI_API_KEY",    DEFAULTS.xai],
+    ["xAI",       "XAI_API_KEY",       DEFAULTS.xai],
+    ["Anthropic", "ANTHROPIC_API_KEY", DEFAULTS.anthropic],
+    ["OpenAI",    "OPENAI_API_KEY",    DEFAULTS.openai],
+    ["Gemini",    "GEMINI_API_KEY",    DEFAULTS.gemini],
   ];
   for (const [name, env, model] of rows) {
     const ok = !!process.env[env];
     const status = ok ? color("green", "✓ key set") : color("red", "✗ no key");
-    console.log(`  ${name.padEnd(8)} ${status.padEnd(20)} ${color("dim", model)}`);
+    console.log(`  ${name.padEnd(10)} ${status.padEnd(20)} ${color("dim", model)}`);
   }
   const claudeBin = process.env.CLAUDE_BIN || "claude";
   console.log(`\n  ${color("chrome", "Claude Code")} (implementation) via "${claudeBin}"`);
@@ -776,7 +779,9 @@ async function doAudit(argv) {
 }
 
 async function repl() {
-  let activeModel = PROVIDERS.length ? "gpt-5" : null;
+  // Boot on the highest-priority configured analysis provider (default: grok).
+  const _avail = availableProviders();
+  let activeModel = _avail.length ? DEFAULTS[_avail[0]] : null;
   let pendingFile = "";
   console.log(banner([
     `${color("heading", "✦ vktech")} ${color("grey", "v" + version())} ${color("chrome", "— interactive analysis")}`,
@@ -812,7 +817,7 @@ async function repl() {
         activeModel = m;
         console.log(color("dim", `Active model -> ${activeModel}`));
       } else {
-        console.log(color("red", `Unknown model "${m || ""}". Try gpt-5, gemini, grok.`));
+        console.log(color("red", `Unknown model "${m || ""}". Try grok, claude, gpt-5, gemini.`));
       }
       continue;
     }

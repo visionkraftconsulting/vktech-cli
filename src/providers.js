@@ -6,6 +6,7 @@ const DEFAULTS = {
   openai: process.env.OPENAI_MODEL || "gpt-5",
   gemini: process.env.GEMINI_MODEL || "gemini-2.5-pro",
   xai: process.env.XAI_MODEL || "grok-4",
+  anthropic: process.env.ANTHROPIC_MODEL || "claude-opus-4-8",
 };
 
 // Map user-typed aliases to a canonical provider key.
@@ -20,7 +21,20 @@ const ALIASES = {
   grok: "xai",
   xai: "xai",
   x: "xai",
+  claude: "anthropic",
+  anthropic: "anthropic",
+  opus: "anthropic",
+  sonnet: "anthropic",
+  haiku: "anthropic",
 };
+
+// Default analysis-provider priority order (highest first). The REPL boots on the
+// first entry whose key is configured; aggregate runs iterate in this order.
+// Override with VKTECH_PRIORITY="xai,anthropic,openai,gemini".
+const PRIORITY = (process.env.VKTECH_PRIORITY
+  ? process.env.VKTECH_PRIORITY.split(",").map((s) => s.trim()).filter(Boolean)
+  : ["xai", "anthropic", "openai", "gemini"]);
+export { PRIORITY };
 
 export function resolveProvider(modelArg) {
   if (!modelArg) return null;
@@ -30,6 +44,7 @@ export function resolveProvider(modelArg) {
   if (key.startsWith("gpt")) return "openai";
   if (key.startsWith("gemini")) return "gemini";
   if (key.startsWith("grok")) return "xai";
+  if (key.startsWith("claude")) return "anthropic";
   return null;
 }
 
@@ -239,13 +254,37 @@ async function askXai({ prompt, system, model, signal }) {
   return body?.choices?.[0]?.message?.content?.trim() || "(empty response)";
 }
 
-const IMPL = { openai: askOpenAI, gemini: askGemini, xai: askXai };
+// ---- Anthropic Claude (Messages API) ----
+async function askAnthropic({ prompt, system, model, signal }) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error("ANTHROPIC_API_KEY is not set in .env");
+  const url = "https://api.anthropic.com/v1/messages";
+  const body = await httpJson(url, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 8192),
+      ...(system ? { system } : {}),
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  const parts = body?.content || [];
+  return parts.map((p) => p.text || "").join("").trim() || "(empty response)";
+}
+
+const IMPL = { openai: askOpenAI, gemini: askGemini, xai: askXai, anthropic: askAnthropic };
 
 export async function ask({ modelArg, prompt, system, signal }) {
   const provider = resolveProvider(modelArg);
   if (!provider) {
     throw new Error(
-      `Unknown model "${modelArg}". Use one of: gpt-5/openai, gemini, grok/xai (or an explicit model id like gpt-4o).`
+      `Unknown model "${modelArg}". Use one of: grok/xai, claude/anthropic, gpt-5/openai, gemini (or an explicit model id like gpt-4o or claude-opus-4-8).`
     );
   }
   const model = modelIdFor(provider, modelArg);
@@ -254,9 +293,18 @@ export async function ask({ modelArg, prompt, system, signal }) {
 }
 
 // Which providers have a key configured (i.e. are actually runnable).
-const KEY_ENV = { openai: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY", xai: "XAI_API_KEY" };
+const KEY_ENV = {
+  openai: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  xai: "XAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+};
+// Runnable providers, returned in PRIORITY order (entries not in PRIORITY trail after).
 export function availableProviders() {
-  return Object.keys(IMPL).filter((p) => !!process.env[KEY_ENV[p]]);
+  const runnable = Object.keys(IMPL).filter((p) => !!process.env[KEY_ENV[p]]);
+  const ranked = PRIORITY.filter((p) => runnable.includes(p));
+  const rest = runnable.filter((p) => !PRIORITY.includes(p));
+  return [...ranked, ...rest];
 }
 
 // Run the prompt against EVERY configured provider (or a given subset) in parallel.
