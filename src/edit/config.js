@@ -2,12 +2,15 @@
 // (file + CLI overrides) is the single source of truth for a job.
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve, join } from "node:path";
-import { PRESETS } from "./presets.js";
+import { PRESETS, ASPECTS, aspectResolution } from "./presets.js";
 
 const DEFAULTS = {
   target_runtime_sec: 0,            // 0 = no cap
-  resolution: { w: 3840, h: 2160, fps: 30 },
+  resolution: null,                 // null => derived from `aspect`; or { w, h, fps }
+  fps: 30,
   aspect: "16:9",
+  fit: "pad",            // pad (letterbox, non-destructive) | crop (fill, center-crop)
+  concurrency: 0,        // 0 = auto (per-encoder default); N = parallel segment encodes
   tone_preset: "neutral",
   encoder: "auto",
   audio: { loudnorm: "I=-16:TP=-1.5:LRA=11", bitrate: "192k", rate: 48000, channels: 2 },
@@ -57,15 +60,29 @@ export function loadConfig(configPath, overrides = {}) {
   cfg.work_dir = abs(cfg.work_dir || (cfg.output ? join(dirname(cfg.output), "_vkedit_work") : null), baseDir);
   if (cfg.captions) cfg.captions.facts_file = abs(cfg.captions.facts_file, baseDir);
 
+  // Derive resolution from aspect unless explicitly provided. fps from cfg.fps.
+  if (!cfg.resolution) {
+    if (!ASPECTS[cfg.aspect]) {
+      // leave null; validation below reports the bad aspect
+    } else {
+      const a = aspectResolution(cfg.aspect);
+      cfg.resolution = { w: a.w, h: a.h, fps: cfg.fps };
+    }
+  } else if (cfg.resolution.fps == null) {
+    cfg.resolution.fps = cfg.fps;
+  }
+
   // Validate — aggregate all errors into one message.
   const errs = [];
   if (!cfg.input) errs.push("input (clips dir) is required");
   else if (!existsSync(cfg.input)) errs.push(`input dir does not exist: ${cfg.input}`);
   if (!cfg.output) errs.push("output path is required");
   if (!PRESETS[cfg.tone_preset]) errs.push(`tone_preset must be one of: ${Object.keys(PRESETS).join(", ")}`);
+  if (!ASPECTS[cfg.aspect]) errs.push(`aspect must be one of: ${Object.keys(ASPECTS).join(", ")}`);
+  if (!["pad", "crop"].includes(cfg.fit)) errs.push('fit must be pad|crop');
   if (!["cut", "flag", "off"].includes(cfg.dark.mode)) errs.push('dark.mode must be cut|flag|off');
   if (!["vision", "metadata", "off"].includes(cfg.captions.mode)) errs.push('captions.mode must be vision|metadata|off');
-  if (!(cfg.resolution.w > 0 && cfg.resolution.h > 0 && cfg.resolution.fps > 0)) errs.push("resolution w/h/fps must be positive");
+  if (!cfg.resolution || !(cfg.resolution.w > 0 && cfg.resolution.h > 0 && cfg.resolution.fps > 0)) errs.push("resolution w/h/fps must be positive");
   if (cfg.captions.mode === "metadata" && !(cfg.captions.overrides || []).length)
     errs.push("captions.mode=metadata requires captions.overrides");
 

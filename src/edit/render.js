@@ -3,17 +3,32 @@
 // the concat demuxer can copy without re-encoding (proven on the NATTY edit).
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { cpus } from "node:os";
 import { ffmpeg } from "./ffmpeg.js";
 import { gradeFilter } from "./presets.js";
 
-// The video filter applied per segment: grade -> scale/pad to target -> sar/fps/pixfmt.
+// The video filter applied per segment: grade -> fit to target -> sar/fps/pixfmt.
+// fit=pad letterboxes (non-destructive); fit=crop scales-to-fill + center-crops
+// (best for reformatting landscape source to vertical/square screens).
+export function fitFilters(w, h, fit) {
+  if (fit === "crop") {
+    return [
+      `scale=${w}:${h}:force_original_aspect_ratio=increase`,
+      `crop=${w}:${h}`,
+    ];
+  }
+  return [
+    `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
+    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
+  ];
+}
+
 function videoFilter(cfg) {
   const { w, h, fps } = cfg.resolution;
   const grade = gradeFilter(cfg.tone_preset);
   return [
     grade,
-    `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
-    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
+    ...fitFilters(w, h, cfg.fit),
     "setsar=1",
     `fps=${fps}`,
     "format=yuv420p",
@@ -40,18 +55,38 @@ async function encodeSegment(entry, idx, cfg, enc, log, signal) {
   return out;
 }
 
-// Encode all segments sequentially (ffmpeg already saturates the box; parallel
-// encodes contend for the encoder). Returns the concat list path.
+// Encode all segments with a bounded concurrency pool. Output paths stay in
+// plan order (seg_NN) so the concat list is deterministic regardless of which
+// encode finishes first. concurrency defaults to ~half the cores (hardware
+// encoders contend; software encoders are already multi-threaded), min 1.
 export async function buildSegments(plan, cfg, enc, { log, signal } = {}) {
   cfg._planLen = plan.length;
-  const segs = [];
-  for (let i = 0; i < plan.length; i++) {
-    if (signal?.aborted) throw new Error("render aborted");
-    segs.push(await encodeSegment(plan[i], i, cfg, enc, log, signal));
+  const cap = Math.max(1, cfg.concurrency || defaultConcurrency(enc.name));
+  const segs = new Array(plan.length);
+  let next = 0;
+
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= plan.length) return;
+      if (signal?.aborted) throw new Error("render aborted");
+      segs[i] = await encodeSegment(plan[i], i, cfg, enc, log, signal);
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(cap, plan.length) }, worker));
+
   const listPath = join(cfg.work_dir, "concat.txt");
   writeFileSync(listPath, segs.map((s) => `file '${s}'`).join("\n") + "\n");
   return { listPath, segments: segs };
+}
+
+// Hardware encoders (videotoolbox) serialize on a single ASIC — modest pool.
+// Software encoders (libx264/5) already use all cores per job — keep pool small
+// to avoid oversubscription, but >1 still helps hide I/O/seek latency.
+function defaultConcurrency(encName) {
+  const cores = (cpus() || []).length || 4;
+  if (encName.includes("videotoolbox")) return Math.min(4, Math.max(2, Math.floor(cores / 2)));
+  return Math.min(3, Math.max(1, Math.floor(cores / 4)));
 }
 
 // Concat segments via the demuxer with stream copy -> single file.

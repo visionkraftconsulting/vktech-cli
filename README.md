@@ -71,7 +71,20 @@ vktech audit hipaa-iso --all -d ./my-app   # all providers -> one report
 vktech code "Implement the fixes Grok suggested in src/order.js"
 vktech providers                    # key/model status
 vktech --help
+
+# Automated video-editing engine (premium) — folder of clips -> finished video
+vktech edit -d ./clips -o ./out/final.mp4 --preset memorial --captions vision
+vktech edit --config job.json       # full control via JSON
+vktech edit -d ./clips -o ./out/x.mp4 --dry-run   # plan only
 ```
+
+### Video editing engine
+
+`vktech edit` is an automated, config-driven video editor: probe → plan → remove
+dark/blocked shots → AI-generated captions → grade + loudness-normalize → assemble →
+verify. Supports multiple screen sizes (16:9, 9:16 vertical, 1:1, 4:5, 21:9) and tone
+presets (memorial, vlog, cinematic, bw, wedding, neutral). Requires `ffmpeg` on PATH.
+See **[docs/EDIT_ENGINE.md](docs/EDIT_ENGINE.md)** for the full config schema and options.
 
 ### REPL commands
 
