@@ -223,46 +223,47 @@ $ vktech <span class="p">edit</span> -d ./clips -o reel.mp4 <span class="p">--as
   <!-- PRICING -->
   <section id="pricing">
     <span class="eyebrow">Pricing</span>
-    <h2>Start free. Scale when you ship.</h2>
+    <h2>Simple pricing. Cancel anytime.</h2>
     <p class="sub">A premium engine for studios, agencies, and creators who edit at volume.</p>
     <div class="price">
       <div class="plan">
-        <div class="name">Preview</div>
-        <div class="amt">$0</div>
+        <div class="name">Starter</div>
+        <div class="amt">$29<small>/mo</small></div>
         <ul>
-          <li>1 project</li>
-          <li>720p watermarked output</li>
+          <li>Up to 1080p output</li>
           <li>All formats &amp; presets</li>
           <li>AI captions</li>
+          <li>Dark-shot removal</li>
         </ul>
-        <a class="btn btn-ghost" href="#" style="width:100%;text-align:center">Try a clip</a>
+        <a class="btn btn-ghost" style="width:100%;text-align:center" href="https://buy.stripe.com/test_bJe6oz5gu8Zs39QaKfbsc00">Get Starter</a>
       </div>
       <div class="plan feat">
         <span class="star">Most popular</span>
-        <div class="name">Studio</div>
-        <div class="amt">$49<small>/mo</small></div>
+        <div class="name">Pro</div>
+        <div class="amt">$79<small>/mo</small></div>
         <ul>
-          <li>Unlimited projects</li>
           <li>Up to 4K, no watermark</li>
           <li>Priority AI captions</li>
           <li>Dark-shot removal &amp; verify</li>
+          <li>Parallel rendering</li>
           <li>Email support</li>
         </ul>
-        <a class="btn btn-primary" href="#" style="width:100%;text-align:center">Get access</a>
+        <a class="btn btn-primary" style="width:100%;text-align:center" href="https://buy.stripe.com/test_dRmcMX8sG5Ng8uadWrbsc01">Get Pro</a>
       </div>
       <div class="plan">
-        <div class="name">Scale / API</div>
-        <div class="amt">Custom</div>
+        <div class="name">Agency</div>
+        <div class="amt">$199<small>/mo</small></div>
         <ul>
+          <li>Everything in Pro</li>
           <li>Headless render fleet</li>
           <li>Batch &amp; webhook API</li>
           <li>Custom presets &amp; fonts</li>
-          <li>SLA &amp; onboarding</li>
+          <li>Priority support</li>
         </ul>
-        <a class="btn btn-ghost" href="mailto:hello@vktech.ai" style="width:100%;text-align:center">Talk to us</a>
+        <a class="btn btn-ghost" style="width:100%;text-align:center" href="https://buy.stripe.com/test_28E4gr4cq1x0cKqaKfbsc02">Get Agency</a>
       </div>
     </div>
-    <p class="note">Preview build. Sample footage shown is auto-edited by the engine. Pricing indicative.</p>
+    <p class="note">Secure checkout via Stripe. Cancel anytime. Need a custom plan or API volume? <a href="mailto:hello@vktech.ai">Talk to us</a>.</p>
   </section>
 
 </main>
@@ -276,6 +277,16 @@ $ vktech <span class="p">edit</span> -d ./clips -o reel.mp4 <span class="p">--as
 
 <script>
   document.getElementById('yr').textContent = new Date().getFullYear();
+
+  // Checkout is via Stripe Payment Links (direct hrefs on the pricing buttons) —
+  // no backend call needed. Show a thank-you banner when Stripe redirects back.
+  if (new URLSearchParams(location.search).get('checkout') === 'success') {
+    const b = document.createElement('div');
+    b.style.cssText = 'position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:50;background:#16331c;border:1px solid #2f6b3a;color:#cdebd2;padding:12px 18px;border-radius:12px;font:14px sans-serif;box-shadow:0 12px 40px -16px rgba(0,0,0,.6)';
+    b.textContent = '✓ Payment received — welcome to vktech video. Check your email to get started.';
+    document.body.appendChild(b);
+    setTimeout(() => b.remove(), 8000);
+  }
 </script>
 </body>
 </html>
