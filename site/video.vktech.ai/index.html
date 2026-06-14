@@ -61,6 +61,25 @@
   .media video{display:block;width:100%;height:auto}
   .media .tag{position:absolute;top:12px;left:12px;font-size:12px;background:rgba(12,11,18,.7);
     border:1px solid var(--line);padding:4px 10px;border-radius:8px;color:var(--accent2)}
+  .media,.vert{position:relative}
+  .media video,.vert video{cursor:zoom-in}
+  /* fullscreen affordance shown on hover */
+  .fsbtn{position:absolute;bottom:12px;right:12px;z-index:5;font:600 12.5px/1 inherit;color:var(--ink);
+    background:rgba(12,11,18,.66);border:1px solid var(--line);border-radius:9px;padding:7px 11px;cursor:pointer;
+    opacity:0;transform:translateY(4px);transition:.15s;backdrop-filter:blur(6px)}
+  .media:hover .fsbtn,.vert:hover .fsbtn,.fsbtn:focus-visible{opacity:1;transform:none}
+  .fsbtn:hover{border-color:var(--accent);color:var(--accent2)}
+  @media(hover:none){.fsbtn{opacity:1;transform:none}}
+  /* lightbox overlay */
+  .lb{position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center;
+    background:rgba(6,5,11,.92);backdrop-filter:blur(8px);padding:24px}
+  .lb.open{display:flex}
+  .lb video{max-width:min(96vw,1600px);max-height:90vh;width:auto;height:auto;border-radius:12px;
+    box-shadow:0 40px 120px -40px rgba(120,80,220,.6);background:#000}
+  .lb-close{position:absolute;top:18px;right:22px;z-index:2;font:600 15px/1 inherit;color:var(--ink);
+    background:rgba(22,20,31,.85);border:1px solid var(--line);border-radius:10px;padding:9px 14px;cursor:pointer}
+  .lb-close:hover{border-color:var(--accent);color:var(--accent2)}
+  .lb-hint{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:var(--dim);font-size:12.5px}
 
   /* Sections */
   section{padding:54px 0}
@@ -157,8 +176,9 @@
     </div>
     <div class="media">
       <span class="tag">auto-edited sample</span>
+      <button class="fsbtn" aria-label="Play full screen">⤢ Full screen</button>
       <video src="assets/sample-landscape.mp4" poster="assets/poster.jpg"
-        autoplay muted loop playsinline></video>
+        data-full autoplay muted loop playsinline></video>
     </div>
   </section>
 
@@ -215,7 +235,8 @@ $ vktech <span class="p">edit</span> -d ./clips -o reel.mp4 <span class="p">--as
         </div>
       </div>
       <div class="vert">
-        <video src="assets/sample-vertical.mp4" autoplay muted loop playsinline></video>
+        <button class="fsbtn" aria-label="Play full screen">⤢ Full screen</button>
+        <video src="assets/sample-vertical.mp4" data-full autoplay muted loop playsinline></video>
       </div>
     </div>
   </section>
@@ -275,8 +296,59 @@ $ vktech <span class="p">edit</span> -d ./clips -o reel.mp4 <span class="p">--as
   </div>
 </footer>
 
+<!-- Fullscreen lightbox -->
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="Video preview">
+  <button class="lb-close" id="lbClose" aria-label="Close">✕ Close</button>
+  <video id="lbVideo" controls playsinline></video>
+  <div class="lb-hint">Press F for true full screen · Esc to close</div>
+</div>
+
 <script>
   document.getElementById('yr').textContent = new Date().getFullYear();
+
+  // --- Fullscreen / lightbox preview for every sample video -----------------
+  const lb = document.getElementById('lb');
+  const lbVideo = document.getElementById('lbVideo');
+  const lbClose = document.getElementById('lbClose');
+
+  function openLightbox(srcVideo) {
+    lbVideo.src = srcVideo.currentSrc || srcVideo.src;
+    lb.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    lbVideo.muted = false;
+    lbVideo.currentTime = 0;
+    lbVideo.play().catch(() => {});
+  }
+  function closeLightbox() {
+    lb.classList.remove('open');
+    document.body.style.overflow = '';
+    lbVideo.pause();
+    lbVideo.removeAttribute('src');
+    lbVideo.load();
+  }
+  function goTrueFullscreen() {
+    const el = lbVideo;
+    if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.webkitEnterFullscreen) el.webkitEnterFullscreen(); // iOS Safari
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  }
+
+  // Click a sample video, or its "Full screen" button, to open the preview.
+  document.querySelectorAll('video[data-full]').forEach((v) => {
+    v.addEventListener('click', () => openLightbox(v));
+    const btn = v.parentElement.querySelector('.fsbtn');
+    if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); openLightbox(v); });
+  });
+
+  lbClose.addEventListener('click', closeLightbox);
+  lb.addEventListener('click', (e) => { if (e.target === lb) closeLightbox(); });
+  document.addEventListener('keydown', (e) => {
+    if (!lb.classList.contains('open')) return;
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'f' || e.key === 'F') goTrueFullscreen();
+  });
+  // Double-click inside the lightbox -> browser true fullscreen.
+  lbVideo.addEventListener('dblclick', goTrueFullscreen);
 
   // Checkout is via Stripe Payment Links (direct hrefs on the pricing buttons) —
   // no backend call needed. Show a thank-you banner when Stripe redirects back.
