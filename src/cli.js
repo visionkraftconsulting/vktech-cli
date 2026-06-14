@@ -762,6 +762,14 @@ async function doEdit(argv) {
     else if (a === "--dry-run") ov.dry_run = true;
     else if (a === "--runtime") ov.target_runtime_sec = Number(argv[++i]);
   }
+  // Paid gate: rendering requires a license. --dry-run (plan only) stays free
+  // so prospects can evaluate the cut before buying.
+  if (!ov.dry_run && !isLicensed()) {
+    console.error(color("red", "vktech edit is a paid feature.") +
+      color("grey", " Set VKTECH_LICENSE (or VKTECH_PRO=1) to render. Use --dry-run to preview the plan for free, or get access at https://video.vktech.ai"));
+    process.exit(1);
+  }
+
   if (!configPath && !ov.input) {
     console.error(color("red", 'Usage: vktech edit --config job.json   OR   vktech edit -d <clips_dir> -o <out.mp4> [--preset ...] [--captions vision|off] [--dry-run]'));
     process.exit(1);
