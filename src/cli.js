@@ -32,6 +32,8 @@ const { runClaude } = await import("./claude.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
 const { readSnippet, runLocalJs, runLocalShell, runRemote } = await import("./run.js");
+const { runEdit } = await import("./edit/index.js");
+const { loadConfig } = await import("./edit/config.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -452,6 +454,8 @@ ${color("bold", "USAGE")}
   vktech audit auto -d <dir>         Auto-detect industry, pick template+frameworks
   vktech audit <t> --all -d <dir>    Run ALL providers, consolidate for Claude
   vktech audit --list                List available audit templates
+  vktech edit --config job.json      Automated video edit (probe→plan→dark-scan→caption→render)
+  vktech edit -d <dir> -o <out.mp4>  Edit a folder of clips with flags (--preset, --captions, --dry-run)
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
@@ -700,6 +704,65 @@ function defaultTemplateName() {
     if (raw.includes("default: true")) return t.name;
   }
   return tpls[0]?.name || null;
+}
+
+// `vktech edit` — automated video-editing engine. Config-driven, zero prompts.
+//   vktech edit --config job.json
+//   vktech edit -d <clips_dir> -o <out.mp4> [--preset memorial|vlog|neutral]
+//               [--captions vision|off] [--encoder auto|libx265|...] [--dry-run]
+async function doEdit(argv) {
+  let configPath = null;
+  const ov = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--config" || a === "-c") configPath = argv[++i];
+    else if (a === "-d" || a === "--input") ov.input = argv[++i];
+    else if (a === "-o" || a === "--output") ov.output = argv[++i];
+    else if (a === "--preset") ov.tone_preset = argv[++i];
+    else if (a === "--encoder") ov.encoder = argv[++i];
+    else if (a === "--captions") ov.captions = { mode: argv[++i] };
+    else if (a === "--dark") ov.dark = { mode: argv[++i] };
+    else if (a === "--dry-run") ov.dry_run = true;
+    else if (a === "--runtime") ov.target_runtime_sec = Number(argv[++i]);
+  }
+  if (!configPath && !ov.input) {
+    console.error(color("red", 'Usage: vktech edit --config job.json   OR   vktech edit -d <clips_dir> -o <out.mp4> [--preset ...] [--captions vision|off] [--dry-run]'));
+    process.exit(1);
+  }
+
+  let cfg;
+  try {
+    cfg = loadConfig(configPath, ov);
+  } catch (e) {
+    console.error(color("red", `\n${e.message}\n`));
+    process.exit(1);
+  }
+
+  // Theme-aware logger passed into the pure engine.
+  const log = {
+    step: (m) => console.log(color("heading", `\n▸ ${m}`)),
+    info: (m) => console.log(color("grey", m)),
+    warn: (m) => console.log(color("yellow", m)),
+  };
+
+  console.log(color("chrome", `vktech edit`) + color("grey", `  ${cfg.input} -> ${cfg.output}`));
+  const spin = startSpinner("editing…");
+  try {
+    const res = await runEdit(cfg, { log });
+    spin.stop();
+    if (res.dryRun) {
+      console.log(color("green", `\n✓ Dry run: ${res.segments} segments, ${(res.runtimeSec / 60).toFixed(1)} min planned`));
+      console.log(color("grey", `  plan: ${res.planPath}`));
+    } else {
+      console.log(color("green", `\n✓ Done: ${res.output}`));
+      console.log(color("grey", `  ${(res.runtimeSec / 60).toFixed(1)} min · ${res.segments} segments · ${res.encoder} · ${res.captions} captions · ${res.verified ? "verified" : res.decodeErrors + " decode errors"}`));
+    }
+  } catch (e) {
+    spin.stop();
+    console.error(color("red", `\nEdit failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 async function doAudit(argv) {
@@ -971,6 +1034,7 @@ async function main() {
   }
   if (cmd === "run" || cmd === "sh" || cmd === "remote") return doRun(cmd, argv.slice(1));
   if (cmd === "audit") return doAudit(argv.slice(1));
+  if (cmd === "edit") return doEdit(argv.slice(1));
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));

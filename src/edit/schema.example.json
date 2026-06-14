@@ -1,0 +1,34 @@
+{
+  "input": "./clips",
+  "output": "./out/final.mp4",
+  "target_runtime_sec": 0,
+  "resolution": { "w": 3840, "h": 2160, "fps": 30 },
+  "aspect": "16:9",
+  "tone_preset": "memorial",
+  "encoder": "auto",
+  "audio": { "loudnorm": "I=-16:TP=-1.5:LRA=11", "bitrate": "192k", "rate": 48000, "channels": 2 },
+  "long_clip_threshold_sec": 600,
+  "window_sec": 240,
+  "dark": { "mode": "cut", "threshold": 24, "min_span_sec": 1.5 },
+  "captions": {
+    "mode": "vision",
+    "vision_model": null,
+    "font": null,
+    "safe_mode": true,
+    "facts_file": null,
+    "overrides": [
+      {
+        "id": "open",
+        "at_sec": 0.5,
+        "dur_sec": 8,
+        "band": [0.30, 0.60, 110],
+        "lines": [
+          { "text": "In Loving Memory", "size": 70, "weight": "400", "y": 0.40 },
+          { "text": "Full Name Here", "size": 134, "weight": "700", "y": 0.48 }
+        ]
+      }
+    ]
+  },
+  "dry_run": false,
+  "log_level": "info"
+}

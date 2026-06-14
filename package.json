@@ -1,7 +1,7 @@
 {
   "name": "vktech",
-  "version": "1.0.0",
-  "description": "Multi-provider AI analysis CLI & library (OpenAI, Gemini, xAI) that hands code implementation off to Claude Code.",
+  "version": "1.1.0",
+  "description": "Multi-provider AI analysis CLI & library (OpenAI, Gemini, xAI) that hands code implementation off to Claude Code. Includes an automated video-editing engine (vktech edit).",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -22,7 +22,7 @@
   "scripts": {
     "start": "node ./src/cli.js",
     "vktech": "node ./src/cli.js",
-    "test": "node --check src/cli.js && node --check src/index.js && node --check src/providers.js && node --check src/templates.js && node --check src/industry.js && node --check src/claude.js && node --check src/run.js",
+    "test": "node --check src/cli.js && node --check src/index.js && node --check src/providers.js && node --check src/templates.js && node --check src/industry.js && node --check src/claude.js && node --check src/run.js && node --check src/edit/index.js && node --check src/edit/ffmpeg.js && node --check src/edit/probe.js && node --check src/edit/plan.js && node --check src/edit/config.js && node --check src/edit/darkscan.js && node --check src/edit/captions.js && node --check src/edit/render.js && node --check src/edit/verify.js && node --check src/edit/presets.js",
     "prepublishOnly": "npm test"
   },
   "engines": {
@@ -54,6 +54,7 @@
   },
   "homepage": "https://vktech.ai",
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.100",
     "dotenv": "^16.4.5"
   }
 }
