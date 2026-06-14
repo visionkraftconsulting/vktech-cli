@@ -802,6 +802,7 @@ async function doEdit(argv) {
     else if (a === "--runtime") ov.target_runtime_sec = Number(argv[++i]);
     // Audio questionnaire flags (music track).
     else if (a === "--audio") { (ov.audio ??= {}).track = argv[++i]; }
+    else if (a === "--speech") { (ov.audio ??= {}).speech_track = argv[++i]; } // enhanced-speech source for the tail
     else if (a === "--audio-mode") { (ov.audio ??= {}).mode = argv[++i]; }   // replace_all|bed|opening
     else if (a === "--audio-sync") { (ov.audio ??= {}).sync = argv[++i]; }   // auto|none
     else if (a === "--audio-opening") { (ov.audio ??= {}).opening_sec = Number(argv[++i]); }

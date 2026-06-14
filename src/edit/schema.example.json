@@ -24,7 +24,8 @@
     "sync_offset_sec": null,
     "crossfade_sec": 2,
     "fade_in_sec": 1.5,
-    "fade_out_sec": 2
+    "fade_out_sec": 2,
+    "speech_track": null
   },
   "long_clip_threshold_sec": 600,
   "window_sec": 240,

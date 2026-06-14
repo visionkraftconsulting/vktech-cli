@@ -188,3 +188,5 @@ CLI shortcuts: `--audio <file> --audio-mode opening --audio-opening 140`,
 `sync_offset_sec` to where the recording starts in the master (use `vktech
 identify` + a quick listen). `sync: "auto"` will *estimate* it but always
 verify — acoustic differences make auto-alignment approximate.
+
+**HQ music + HQ speech:** in `opening` mode, set `audio.speech_track` to a separately-enhanced speech render (same timeline as the video) — the opening uses your music track, the rest uses the enhanced speech. CLI: `--speech ./enhanced.wav`.

@@ -141,15 +141,18 @@ export async function applyAudio(videoIn, videoOut, cfg, { log, signal } = {}) {
       await ffmpeg(["-loglevel", "error", "-y", "-ss", String(ss), "-t", String(openLen + xf), "-i", a.track,
         "-af", `afade=t=in:st=0:d=${fin},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=${RATE}`,
         "-ac", "2", "-ar", String(RATE), open], { signal });
-      // original audio from openLen onward (speech to keep)
+      // Tail (the kept speech) from openLen onward. Source it from a separate
+      // enhanced-speech file when given (same timeline as the video), else from
+      // the video's own audio. Lets you combine HQ music + HQ enhanced speech.
+      const speechSrc = a.speech_track || videoIn;
       const tail = join(dir, "tail.wav");
-      await ffmpeg(["-loglevel", "error", "-y", "-ss", String(openLen), "-i", videoIn,
+      await ffmpeg(["-loglevel", "error", "-y", "-ss", String(openLen), "-i", speechSrc,
         "-vn", "-c:a", "pcm_s16le", "-ar", String(RATE), "-ac", "2", tail], { signal });
       // crossfade open -> tail
       await ffmpeg(["-loglevel", "error", "-y", "-i", open, "-i", tail,
         "-filter_complex", `[0][1]acrossfade=d=${xf}:c1=tri:c2=tri[o]`, "-map", "[o]",
         "-c:a", "pcm_s16le", newAudio], { signal });
-      L.info(`  opening ${openLen.toFixed(0)}s replaced with track, crossfaded into original`);
+      L.info(`  opening ${openLen.toFixed(0)}s = track; rest = ${a.speech_track ? "enhanced speech" : "original"} (crossfaded)`);
 
     } else if (a.mode === "replace_all") {
       const loop = a.loop !== false ? ["-stream_loop", "-1"] : [];

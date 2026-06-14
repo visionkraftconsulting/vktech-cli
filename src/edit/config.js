@@ -18,6 +18,9 @@ const DEFAULTS = {
   audio: {
     loudnorm: "I=-16:TP=-1.5:LRA=11", bitrate: "192k", rate: 48000, channels: 2,
     track: null,               // path to user-uploaded music (mp3/wav)
+    speech_track: null,        // opening mode: source the kept speech from this
+                               //   file (e.g. an enhanced-speech render, same
+                               //   timeline as the video) instead of the original
     mode: "off",               // off | replace_all | bed | opening
     loop: true,                // replace_all/bed: loop to cover runtime
     bed_gain_db: -16,          // bed: how far under the voices
@@ -71,7 +74,7 @@ export function loadConfig(configPath, overrides = {}) {
   cfg.output = abs(cfg.output, baseDir);
   cfg.work_dir = abs(cfg.work_dir || (cfg.output ? join(dirname(cfg.output), "_vkedit_work") : null), baseDir);
   if (cfg.captions) cfg.captions.facts_file = abs(cfg.captions.facts_file, baseDir);
-  if (cfg.audio) cfg.audio.track = abs(cfg.audio.track, baseDir);
+  if (cfg.audio) { cfg.audio.track = abs(cfg.audio.track, baseDir); cfg.audio.speech_track = abs(cfg.audio.speech_track, baseDir); }
 
   // Derive resolution from aspect unless explicitly provided. fps from cfg.fps.
   if (!cfg.resolution) {
@@ -100,6 +103,7 @@ export function loadConfig(configPath, overrides = {}) {
     if (!cfg.audio.track) errs.push(`audio.mode="${cfg.audio.mode}" requires audio.track (path to a music file)`);
     else if (!existsSync(cfg.audio.track)) errs.push(`audio.track not found: ${cfg.audio.track}`);
     if (!["none", "auto"].includes(cfg.audio.sync)) errs.push('audio.sync must be none|auto');
+    if (cfg.audio.speech_track && !existsSync(cfg.audio.speech_track)) errs.push(`audio.speech_track not found: ${cfg.audio.speech_track}`);
   }
   if (!cfg.resolution || !(cfg.resolution.w > 0 && cfg.resolution.h > 0 && cfg.resolution.fps > 0)) errs.push("resolution w/h/fps must be positive");
   if (cfg.captions.mode === "metadata" && !(cfg.captions.overrides || []).length)
