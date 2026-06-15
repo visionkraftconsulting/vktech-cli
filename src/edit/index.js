@@ -11,6 +11,7 @@ import { gradeFilter } from "./presets.js";
 import { pickEncoder, ffmpeg } from "./ffmpeg.js";
 import { verify } from "./verify.js";
 import { applyAudio } from "./audio.js";
+import { writePremiere } from "./premiere.js";
 
 const noop = () => {};
 
@@ -60,9 +61,25 @@ export async function runEdit(cfg, { log = {}, signal } = {}) {
   }
   const planPath = writePlan(plan, cfg.work_dir);
 
+  // Premiere project export (FCPXML + EDL) — works in dry-run too, since it only
+  // needs the plan. Attach source frame counts so clip durations are frame-safe.
+  let premiere = null;
+  if (cfg.premiere) {
+    L.step("Exporting Premiere project (FCPXML + EDL)…");
+    const byFile = Object.fromEntries(clips.map((c) => [c.file, c]));
+    const fps0 = clips[0]?.fps || 30, w = clips[0]?.width || 3840, h = clips[0]?.height || 2160;
+    const pplan = plan.map((p) => {
+      const c = byFile[p.file];
+      return { ...p, _frames: c ? Math.round(c.duration * (c.fps || fps0)) : Math.round((p.out + 5) * fps0) };
+    });
+    premiere = writePremiere(pplan, cfg, { fps: fps0, width: w, height: h });
+    L.info(`  ${premiere.fcpxmlPath}`);
+    L.info(`  ${premiere.edlPath}`);
+  }
+
   if (cfg.dry_run) {
     L.step("Dry run — plan only.");
-    return { dryRun: true, planPath, segments: plan.length, runtimeSec: totalRuntime(plan) };
+    return { dryRun: true, planPath, premiere, segments: plan.length, runtimeSec: totalRuntime(plan) };
   }
 
   const encInfo = await pickEncoder(cfg.encoder);
@@ -110,7 +127,7 @@ export async function runEdit(cfg, { log = {}, signal } = {}) {
   else L.info("  0 decode errors");
 
   return {
-    output: finalPath, planPath, segments: plan.length,
+    output: finalPath, planPath, premiere, segments: plan.length,
     runtimeSec: totalRuntime(plan), encoder: encInfo.name,
     captions: cards.length, audio: audioApplied, verified: v.ok, decodeErrors: v.count,
   };

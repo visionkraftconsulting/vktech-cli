@@ -23,7 +23,7 @@
   "scripts": {
     "start": "node ./src/cli.js",
     "vktech": "node ./src/cli.js",
-    "test": "node --check src/cli.js && node --check src/index.js && node --check src/providers.js && node --check src/templates.js && node --check src/industry.js && node --check src/claude.js && node --check src/run.js && node --check src/edit/index.js && node --check src/edit/ffmpeg.js && node --check src/edit/probe.js && node --check src/edit/plan.js && node --check src/edit/config.js && node --check src/edit/darkscan.js && node --check src/edit/captions.js && node --check src/edit/render.js && node --check src/edit/verify.js && node --check src/edit/presets.js && node --check src/edit/cloudflare.js && node --check src/edit/identify.js && node --check src/edit/audio.js && node --check src/edit/cloudflare.js",
+    "test": "node --check src/cli.js && node --check src/index.js && node --check src/providers.js && node --check src/templates.js && node --check src/industry.js && node --check src/claude.js && node --check src/run.js && node --check src/edit/index.js && node --check src/edit/ffmpeg.js && node --check src/edit/probe.js && node --check src/edit/plan.js && node --check src/edit/config.js && node --check src/edit/darkscan.js && node --check src/edit/captions.js && node --check src/edit/render.js && node --check src/edit/verify.js && node --check src/edit/presets.js && node --check src/edit/cloudflare.js && node --check src/edit/identify.js && node --check src/edit/audio.js && node --check src/edit/premiere.js && node --check src/edit/cloudflare.js",
     "prepublishOnly": "npm test"
   },
   "engines": {

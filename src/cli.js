@@ -457,7 +457,7 @@ ${color("bold", "USAGE")}
   vktech audit <t> --all -d <dir>    Run ALL providers, consolidate for Claude
   vktech audit --list                List available audit templates
   vktech edit --config job.json      Automated video edit (probe→plan→dark-scan→caption→render)
-  vktech edit -d <dir> -o <out.mp4>  Edit clips (--preset, --captions, --audio <track> --audio-mode …, --dry-run)
+  vktech edit -d <dir> -o <out.mp4>  Edit clips (--preset, --captions, --audio, --premiere, --dry-run)
   vktech identify <file>             Recognize music in an audio/video file (Shazam)
   vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech industries                  Show detectable industries + frameworks
@@ -799,6 +799,7 @@ async function doEdit(argv) {
     else if (a === "--captions") ov.captions = { mode: argv[++i] };
     else if (a === "--dark") ov.dark = { mode: argv[++i] };
     else if (a === "--dry-run") ov.dry_run = true;
+    else if (a === "--premiere") ov.premiere = true;
     else if (a === "--runtime") ov.target_runtime_sec = Number(argv[++i]);
     // Audio questionnaire flags (music track).
     else if (a === "--audio") { (ov.audio ??= {}).track = argv[++i]; }
@@ -850,6 +851,10 @@ async function doEdit(argv) {
     } else {
       console.log(color("green", `\n✓ Done: ${res.output}`));
       console.log(color("grey", `  ${(res.runtimeSec / 60).toFixed(1)} min · ${res.segments} segments · ${res.encoder} · ${res.captions} captions · audio:${res.audio} · ${res.verified ? "verified" : res.decodeErrors + " decode errors"}`));
+    }
+    if (res.premiere) {
+      console.log(color("chrome", `  Premiere project:`) + color("grey", ` ${res.premiere.fcpxmlPath}`));
+      console.log(color("grey", `                    ${res.premiere.edlPath}`));
     }
   } catch (e) {
     spin.stop();

@@ -190,3 +190,16 @@ identify` + a quick listen). `sync: "auto"` will *estimate* it but always
 verify — acoustic differences make auto-alignment approximate.
 
 **HQ music + HQ speech:** in `opening` mode, set `audio.speech_track` to a separately-enhanced speech render (same timeline as the video) — the opening uses your music track, the rest uses the enhanced speech. CLI: `--speech ./enhanced.wav`.
+
+## Premiere Pro export
+
+Add `--premiere` (or `"premiere": true` in config) and the engine also writes a
+Premiere-importable project next to the output:
+- `<name>.fcpxml` — timeline with all clips at their cut points (File > Import in Premiere)
+- `<name>.edl` — CMX3600 fallback (most universal; if FCPXML is rejected)
+
+```bash
+vktech edit -d ./clips -o ./out/film.mp4 --premiere
+```
+The project references the source clips by absolute path, so keep the media in place
+(or on the same drive). Editors can open it and keep working from the exact cut.

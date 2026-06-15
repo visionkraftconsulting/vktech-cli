@@ -33,6 +33,8 @@ const DEFAULTS = {
   window_sec: 240,
   dark: { mode: "cut", threshold: 24, min_span_sec: 1.5 },
   captions: { mode: "off", vision_model: null, font: null, overrides: [], facts_file: null, safe_mode: true },
+  premiere: false,           // also export a Premiere-importable project (FCPXML + EDL)
+  project_name: null,        // name for the exported project (default: output basename)
   dry_run: false,
   log_level: "info",
 };
