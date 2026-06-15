@@ -147,6 +147,7 @@
       <a href="#how">How it works</a>
       <a href="#features">Features</a>
       <a href="#formats">Formats</a>
+      <a href="#premiere">Premiere</a>
       <a href="#pricing">Pricing</a>
       <a class="btn btn-primary" href="#pricing">Get access</a>
     </nav>
@@ -210,6 +211,7 @@
       <div class="card"><div class="ico">🎨</div><h3>Mood presets</h3><p>Memorial, cinematic, wedding, vlog, B&amp;W, neutral. One word sets the entire color and tone.</p></div>
       <div class="card"><div class="ico">⚡</div><h3>Fast &amp; parallel</h3><p>Hardware-accelerated encoding with parallel segments. Hours of footage in minutes.</p></div>
       <div class="card"><div class="ico">✅</div><h3>Verified output</h3><p>Every render is decoded end-to-end and reported clean — no silent corruption.</p></div>
+      <div class="card"><div class="ico">🎬</div><h3>Edit in Premiere</h3><p>Download a Premiere Pro project (FCPXML&nbsp;+&nbsp;EDL) of the exact cut — open it and keep editing, every clip trimmed to the timeline.</p></div>
     </div>
   </section>
 
@@ -241,6 +243,31 @@ $ vktech <span class="p">edit</span> -d ./clips -o reel.mp4 <span class="p">--as
     </div>
   </section>
 
+  <!-- PREMIERE -->
+  <section id="premiere">
+    <span class="eyebrow">Yours to keep editing</span>
+    <h2>Open it in Premiere Pro</h2>
+    <p class="sub">Every edit ships with a downloadable Premiere Pro project — the full timeline,
+      every clip trimmed to the exact cut. Drop it into Premiere and fine-tune, add graphics,
+      or hand it to your editor. No lock-in.</p>
+    <div class="chips">
+      <span class="chip"><b>FCPXML</b> timeline import</span>
+      <span class="chip"><b>EDL</b> universal fallback</span>
+      <span class="chip"><b>Frame-accurate</b> cut points</span>
+      <span class="chip"><b>Media-linked</b> originals</span>
+    </div>
+    <div class="code">
+<span class="c"># the engine writes the project alongside your video</span>
+$ vktech <span class="p">edit</span> -d ./clips -o film.mp4 <span class="p">--premiere</span>
+<span class="ok">✓ Done</span> film.mp4
+  <span class="c">Premiere project:</span> film.fcpxml  ·  film.edl
+    </div>
+    <div class="cta" style="margin-top:22px">
+      <a class="btn btn-primary" href="#pricing">Get access</a>
+      <a class="btn btn-ghost" href="mailto:hello@vktech.ai?subject=vktech%20video%20Premiere%20export">Ask about Premiere export</a>
+    </div>
+  </section>
+
   <!-- PRICING -->
   <section id="pricing">
     <span class="eyebrow">Pricing</span>
@@ -264,6 +291,7 @@ $ vktech <span class="p">edit</span> -d ./clips -o reel.mp4 <span class="p">--as
         <div class="amt">$79<small>/mo</small></div>
         <ul>
           <li>Up to 4K, no watermark</li>
+          <li>Premiere project export (FCPXML + EDL)</li>
           <li>Priority AI captions</li>
           <li>Dark-shot removal &amp; verify</li>
           <li>Parallel rendering</li>
