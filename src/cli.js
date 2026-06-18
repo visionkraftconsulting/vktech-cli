@@ -32,6 +32,7 @@ const { runClaude } = await import("./claude.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
 const { readSnippet, runLocalJs, runLocalShell, runRemote } = await import("./run.js");
+const { runSecrets } = await import("./secrets.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -452,6 +453,7 @@ ${color("bold", "USAGE")}
   vktech audit auto -d <dir>         Auto-detect industry, pick template+frameworks
   vktech audit <t> --all -d <dir>    Run ALL providers, consolidate for Claude
   vktech audit --list                List available audit templates
+  vktech secrets [-d dir] [--history] Scan working tree (+git history) for leaked secrets
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
@@ -971,6 +973,7 @@ async function main() {
   }
   if (cmd === "run" || cmd === "sh" || cmd === "remote") return doRun(cmd, argv.slice(1));
   if (cmd === "audit") return doAudit(argv.slice(1));
+  if (cmd === "secrets" || cmd === "secret-audit") return runSecrets(argv.slice(1), { color, heading: (t) => color("heading", t) });
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));
