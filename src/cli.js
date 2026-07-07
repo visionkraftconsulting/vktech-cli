@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // vktech — multi-provider AI analysis CLI that hands code work to Claude Code.
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve, isAbsolute } from "node:path";
+import { dirname, join, resolve, isAbsolute, basename } from "node:path";
 // dirname is already imported above for __dirname; reused for output paths.
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { createInterface, cursorTo, clearLine, emitKeypressEvents } from "node:readline";
@@ -36,6 +36,7 @@ const { runEdit } = await import("./edit/index.js");
 const { loadConfig } = await import("./edit/config.js");
 const { upsertA, removeA, isLicensed } = await import("./edit/cloudflare.js");
 const { identify, fmt } = await import("./edit/identify.js");
+const { transcribe, collectInputs: listTranscribable } = await import("./transcribe.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -451,7 +452,7 @@ ${color("bold", "vktech")} v${version()} — analyze with OpenAI / Gemini / xAI,
 ${color("bold", "USAGE")}
   vktech                              Start interactive REPL
   vktech ask --model <m> "<prompt>"  One-shot analysis with a provider
-  vktech ask -i <img> "<prompt>"     Vision analysis (grok › claude › openai)
+  vktech ask -i <img> "<prompt>"     Vision analysis (self-hosted by default; $0 API)
   vktech audit [template] [-d dir]   Run a saved audit template over a project
   vktech audit auto -d <dir>         Auto-detect industry, pick template+frameworks
   vktech audit <t> --all -d <dir>    Run ALL providers, consolidate for Claude
@@ -459,6 +460,7 @@ ${color("bold", "USAGE")}
   vktech edit --config job.json      Automated video edit (probe→plan→dark-scan→caption→render)
   vktech edit -d <dir> -o <out.mp4>  Edit clips (--preset, --captions, --audio, --premiere, --dry-run)
   vktech identify <file>             Recognize music in an audio/video file (Shazam)
+  vktech transcribe <file|dir>       Offline speech-to-text (whisper.cpp): .txt/.srt (paid; --dry-run free)
   vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
@@ -487,6 +489,8 @@ ${color("bold", "EXAMPLES")}
   vktech ask -i screenshot.png "Analyze this page's theme and color palette"
   vktech ask -i a.png -i b.png "Compare these two layouts"
   vktech audit hipaa-iso -d ./my-app -o report.md
+  vktech transcribe ./videos --srt --combine       # whole folder → .txt + .srt + combined
+  vktech transcribe talk.mp4 -m medium.en          # single file, higher-accuracy model
   vktech code "Implement the fixes Grok suggested in src/order.js"
 
 ${color("bold", "PASTE & RUN")} (no shell-quoting; snippet read from stdin/heredoc/-f file)
@@ -742,6 +746,73 @@ async function doIdentify(argv) {
     }
   } catch (e) {
     console.error(color("red", `\nidentify failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// `vktech transcribe` — offline speech-to-text (whisper.cpp) for audio/video.
+//   vktech transcribe <file|dir> [--model small.en] [--srt] [--txt-only]
+//                     [--combine] [-o out_dir] [--lang en] [--dry-run]
+// Default output is .txt beside the input; add --srt for subtitles, --combine
+// to also write ALL_TRANSCRIPTS_COMBINED.txt when transcribing a directory.
+// PAID feature (VKTECH_LICENSE / VKTECH_PRO=1). --dry-run lists inputs for free.
+async function doTranscribe(argv) {
+  let input = null, model = null, outDir = null, lang = "en";
+  let srt = false, txt = true, combine = false, dryRun = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--model" || a === "-m") model = argv[++i];
+    else if (a === "-o" || a === "--out") outDir = argv[++i];
+    else if (a === "--lang" || a === "-l") lang = argv[++i];
+    else if (a === "--srt") srt = true;
+    else if (a === "--srt-only") { srt = true; txt = false; }
+    else if (a === "--txt-only" || a === "--no-srt") txt = true;
+    else if (a === "--combine") combine = true;
+    else if (a === "--dry-run") dryRun = true;
+    else if (!a.startsWith("-")) input = a;
+  }
+  if (!input) {
+    console.error(color("red", "Usage: vktech transcribe <file|dir> [--model small.en] [--srt] [--combine] [-o out_dir] [--lang en] [--dry-run]"));
+    process.exit(1);
+  }
+  if (!srt && !txt) txt = true; // never produce nothing
+
+  const log = { info: (m) => console.log(color("grey", m)), warn: (m) => console.log(color("yellow", m)) };
+  console.log(color("chrome", "vktech transcribe") + color("grey", `  ${input}  (whisper.cpp, model ${model || process.env.VKTECH_WHISPER_MODEL || "small.en"})`));
+
+  // Free preview: list the files that would be transcribed, no work done.
+  if (dryRun) {
+    try {
+      const files = listTranscribable(input);
+      console.log(color("grey", `  dry-run — ${files.length} file(s) would be transcribed:`));
+      for (const f of files) console.log(color("grey", `   • ${basename(f)}`));
+      console.log(color("grey", `  formats: ${[txt && "txt", srt && "srt"].filter(Boolean).join("+")}` + (combine ? " + combined" : "")));
+    } catch (e) {
+      console.error(color("red", `\ntranscribe failed: ${e.message}\n`));
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // Paid gate — matches `vktech edit` / `vktech dns`.
+  if (!isLicensed()) {
+    console.error(color("red", "vktech transcribe is a paid feature.") +
+      color("grey", " Set VKTECH_LICENSE (or VKTECH_PRO=1) in your vktech env to run it. Use --dry-run to preview the file list for free, or get access at https://video.vktech.ai"));
+    process.exit(1);
+  }
+
+  try {
+    const { outputs, combined, outDir: dir } = await transcribe(input, { model, lang, srt, txt, combine, outDir, log });
+    console.log("");
+    console.log(color("green", `✓ transcribed ${outputs.length} file(s)`) + color("grey", ` → ${dir}`));
+    for (const o of outputs) {
+      const made = [o.txt && "txt", o.srt && "srt"].filter(Boolean).join("+");
+      console.log(color("grey", `   ${basename(o.src)}  (${made})`));
+    }
+    if (combined) console.log(color("heading", `\n   combined → ${combined}`));
+  } catch (e) {
+    console.error(color("red", `\ntranscribe failed: ${e.message}\n`));
     process.exit(1);
   }
   process.exit(0);
@@ -1136,6 +1207,7 @@ async function main() {
   if (cmd === "edit") return doEdit(argv.slice(1));
   if (cmd === "dns") return doDns(argv.slice(1));
   if (cmd === "identify") return doIdentify(argv.slice(1));
+  if (cmd === "transcribe") return doTranscribe(argv.slice(1));
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));

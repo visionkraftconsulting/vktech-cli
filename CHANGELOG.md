@@ -3,6 +3,18 @@
 All notable changes to vktech are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0]
+
+### Added
+- `vktech transcribe <file|dir>` — offline speech-to-text via whisper.cpp (**paid feature**,
+  gated on `VKTECH_LICENSE` / `VKTECH_PRO=1`, like `edit`/`dns`). Extracts 16 kHz mono audio
+  with ffmpeg, then whisper-cli writes `.txt` (default) and/or `.srt`. Directory inputs sweep
+  every audio/video file; `--combine` writes one `ALL_TRANSCRIPTS_COMBINED.txt`. Flags:
+  `--model`, `--srt`, `--srt-only`, `--combine`, `--lang`, `-o`, `--dry-run` (free file-list
+  preview). ggml model (default `small.en`) auto-downloads once to `~/.config/vktech/models/`;
+  override via `--model` or `VKTECH_WHISPER_MODEL`. Requires `whisper-cpp` on PATH
+  (`brew install whisper-cpp`).
+
 ## [1.0.0]
 
 Initial public release.

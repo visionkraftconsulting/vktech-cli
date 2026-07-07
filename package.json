@@ -1,6 +1,6 @@
 {
   "name": "vktech",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Multi-provider AI analysis CLI & library (OpenAI, Gemini, xAI) that hands code implementation off to Claude Code. Includes an automated video-editing engine (vktech edit).",
   "type": "module",
   "main": "./src/index.js",
