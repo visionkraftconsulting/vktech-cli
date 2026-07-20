@@ -142,7 +142,7 @@ The code changes are committed-ready in `src/providers.js`, `.env.example`,
 `src/cli.js`. To release to the fleet after testing:
 
 ```bash
-cd ~/Kwasi_Dev/vktech
+cd ./vktech
 npm test                    # node --check on all sources
 git add -A && git commit    # then push to the public repo
 # fleet upgrade (per droplet): npm install -g github:visionkraftconsulting/vktech-cli
