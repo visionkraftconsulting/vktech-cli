@@ -37,6 +37,7 @@ const { loadConfig } = await import("./edit/config.js");
 const { upsertA, removeA, isLicensed } = await import("./edit/cloudflare.js");
 const { identify, fmt } = await import("./edit/identify.js");
 const { transcribe, collectInputs: listTranscribable } = await import("./transcribe.js");
+const { runSecrets } = await import("./secrets.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -462,6 +463,7 @@ ${color("bold", "USAGE")}
   vktech identify <file>             Recognize music in an audio/video file (Shazam)
   vktech transcribe <file|dir>       Offline speech-to-text (whisper.cpp): .txt/.srt (paid; --dry-run free)
   vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
+  vktech secrets [-d dir] [--history] Scan working tree (+git history) for leaked secrets
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
@@ -1208,6 +1210,7 @@ async function main() {
   if (cmd === "dns") return doDns(argv.slice(1));
   if (cmd === "identify") return doIdentify(argv.slice(1));
   if (cmd === "transcribe") return doTranscribe(argv.slice(1));
+  if (cmd === "secrets" || cmd === "secret-audit") return runSecrets(argv.slice(1), { color, heading: (t) => color("heading", t) });
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));
