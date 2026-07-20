@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // vktech — multi-provider AI analysis CLI that hands code work to Claude Code.
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve, isAbsolute } from "node:path";
+import { dirname, join, resolve, isAbsolute, basename } from "node:path";
 // dirname is already imported above for __dirname; reused for output paths.
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { createInterface, cursorTo, clearLine, emitKeypressEvents } from "node:readline";
@@ -32,6 +32,11 @@ const { runClaude } = await import("./claude.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
 const { readSnippet, runLocalJs, runLocalShell, runRemote } = await import("./run.js");
+const { runEdit } = await import("./edit/index.js");
+const { loadConfig } = await import("./edit/config.js");
+const { upsertA, removeA, isLicensed } = await import("./edit/cloudflare.js");
+const { identify, fmt } = await import("./edit/identify.js");
+const { transcribe, collectInputs: listTranscribable } = await import("./transcribe.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -447,11 +452,16 @@ ${color("bold", "vktech")} v${version()} — analyze with OpenAI / Gemini / xAI,
 ${color("bold", "USAGE")}
   vktech                              Start interactive REPL
   vktech ask --model <m> "<prompt>"  One-shot analysis with a provider
-  vktech ask -i <img> "<prompt>"     Vision analysis (grok › claude › openai)
+  vktech ask -i <img> "<prompt>"     Vision analysis (self-hosted by default; $0 API)
   vktech audit [template] [-d dir]   Run a saved audit template over a project
   vktech audit auto -d <dir>         Auto-detect industry, pick template+frameworks
   vktech audit <t> --all -d <dir>    Run ALL providers, consolidate for Claude
   vktech audit --list                List available audit templates
+  vktech edit --config job.json      Automated video edit (probe→plan→dark-scan→caption→render)
+  vktech edit -d <dir> -o <out.mp4>  Edit clips (--preset, --captions, --audio, --premiere, --dry-run)
+  vktech identify <file>             Recognize music in an audio/video file (Shazam)
+  vktech transcribe <file|dir>       Offline speech-to-text (whisper.cpp): .txt/.srt (paid; --dry-run free)
+  vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
@@ -479,6 +489,8 @@ ${color("bold", "EXAMPLES")}
   vktech ask -i screenshot.png "Analyze this page's theme and color palette"
   vktech ask -i a.png -i b.png "Compare these two layouts"
   vktech audit hipaa-iso -d ./my-app -o report.md
+  vktech transcribe ./videos --srt --combine       # whole folder → .txt + .srt + combined
+  vktech transcribe talk.mp4 -m medium.en          # single file, higher-accuracy model
   vktech code "Implement the fixes Grok suggested in src/order.js"
 
 ${color("bold", "PASTE & RUN")} (no shell-quoting; snippet read from stdin/heredoc/-f file)
@@ -700,6 +712,227 @@ function defaultTemplateName() {
     if (raw.includes("default: true")) return t.name;
   }
   return tpls[0]?.name || null;
+}
+
+// `vktech identify` — recognize music in an audio/video file via Shazam.
+//   vktech identify <file> [--step N] [--win N] [--json]
+async function doIdentify(argv) {
+  let file = null, step = 40, win = 12, asJson = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--step") step = Number(argv[++i]);
+    else if (a === "--win") win = Number(argv[++i]);
+    else if (a === "--json") asJson = true;
+    else if (!a.startsWith("-")) file = a;
+  }
+  if (!file) { console.error(color("red", "Usage: vktech identify <audio|video file> [--step 40] [--win 12] [--json]")); process.exit(1); }
+  if (!existsSync(file)) { console.error(color("red", `file not found: ${file}`)); process.exit(1); }
+
+  const log = asJson ? null : { info: (m) => console.log(color("grey", m)), warn: (m) => console.log(color("yellow", m)) };
+  if (!asJson) console.log(color("chrome", "vktech identify") + color("grey", `  scanning ${file}…`));
+  try {
+    const res = await identify(file, { step, win, log });
+    if (asJson) { console.log(JSON.stringify(res, null, 2)); process.exit(0); }
+    console.log("");
+    if (!res.hits.length) {
+      console.log(color("yellow", "No music recognized (likely speech or silence)."));
+    } else {
+      console.log(color("heading", `Identified ${res.hits.length} track(s):`));
+      for (const h of res.hits) {
+        console.log(color("green", `  ♪ ${h.title} — ${h.artist}`) + color("grey", `   [${fmt(h.at)}–${fmt(h.end)}]`));
+        if (h.isrc) console.log(color("grey", `     ISRC ${h.isrc}`) + (h.url ? color("grey", ` · ${h.url}`) : ""));
+        else if (h.url) console.log(color("grey", `     ${h.url}`));
+      }
+    }
+  } catch (e) {
+    console.error(color("red", `\nidentify failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// `vktech transcribe` — offline speech-to-text (whisper.cpp) for audio/video.
+//   vktech transcribe <file|dir> [--model small.en] [--srt] [--txt-only]
+//                     [--combine] [-o out_dir] [--lang en] [--dry-run]
+// Default output is .txt beside the input; add --srt for subtitles, --combine
+// to also write ALL_TRANSCRIPTS_COMBINED.txt when transcribing a directory.
+// PAID feature (VKTECH_LICENSE / VKTECH_PRO=1). --dry-run lists inputs for free.
+async function doTranscribe(argv) {
+  let input = null, model = null, outDir = null, lang = "en";
+  let srt = false, txt = true, combine = false, dryRun = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--model" || a === "-m") model = argv[++i];
+    else if (a === "-o" || a === "--out") outDir = argv[++i];
+    else if (a === "--lang" || a === "-l") lang = argv[++i];
+    else if (a === "--srt") srt = true;
+    else if (a === "--srt-only") { srt = true; txt = false; }
+    else if (a === "--txt-only" || a === "--no-srt") txt = true;
+    else if (a === "--combine") combine = true;
+    else if (a === "--dry-run") dryRun = true;
+    else if (!a.startsWith("-")) input = a;
+  }
+  if (!input) {
+    console.error(color("red", "Usage: vktech transcribe <file|dir> [--model small.en] [--srt] [--combine] [-o out_dir] [--lang en] [--dry-run]"));
+    process.exit(1);
+  }
+  if (!srt && !txt) txt = true; // never produce nothing
+
+  const log = { info: (m) => console.log(color("grey", m)), warn: (m) => console.log(color("yellow", m)) };
+  console.log(color("chrome", "vktech transcribe") + color("grey", `  ${input}  (whisper.cpp, model ${model || process.env.VKTECH_WHISPER_MODEL || "small.en"})`));
+
+  // Free preview: list the files that would be transcribed, no work done.
+  if (dryRun) {
+    try {
+      const files = listTranscribable(input);
+      console.log(color("grey", `  dry-run — ${files.length} file(s) would be transcribed:`));
+      for (const f of files) console.log(color("grey", `   • ${basename(f)}`));
+      console.log(color("grey", `  formats: ${[txt && "txt", srt && "srt"].filter(Boolean).join("+")}` + (combine ? " + combined" : "")));
+    } catch (e) {
+      console.error(color("red", `\ntranscribe failed: ${e.message}\n`));
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // Paid gate — matches `vktech edit` / `vktech dns`.
+  if (!isLicensed()) {
+    console.error(color("red", "vktech transcribe is a paid feature.") +
+      color("grey", " Set VKTECH_LICENSE (or VKTECH_PRO=1) in your vktech env to run it. Use --dry-run to preview the file list for free, or get access at https://video.vktech.ai"));
+    process.exit(1);
+  }
+
+  try {
+    const { outputs, combined, outDir: dir } = await transcribe(input, { model, lang, srt, txt, combine, outDir, log });
+    console.log("");
+    console.log(color("green", `✓ transcribed ${outputs.length} file(s)`) + color("grey", ` → ${dir}`));
+    for (const o of outputs) {
+      const made = [o.txt && "txt", o.srt && "srt"].filter(Boolean).join("+");
+      console.log(color("grey", `   ${basename(o.src)}  (${made})`));
+    }
+    if (combined) console.log(color("heading", `\n   combined → ${combined}`));
+  } catch (e) {
+    console.error(color("red", `\ntranscribe failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// `vktech dns` — provision Cloudflare DNS for a published site/preview (paid).
+//   vktech dns publish <subdomain> --ip <addr> [--dns-only]
+//   vktech dns remove  <subdomain>
+async function doDns(argv) {
+  const action = argv[0];
+  const name = argv[1];
+  let ip = null, proxied = true;
+  for (let i = 2; i < argv.length; i++) {
+    if (argv[i] === "--ip") ip = argv[++i];
+    else if (argv[i] === "--dns-only") proxied = false;
+  }
+  if (!["publish", "remove"].includes(action) || !name) {
+    console.error(color("red", "Usage: vktech dns publish <subdomain> --ip <addr> [--dns-only]   |   vktech dns remove <subdomain>"));
+    process.exit(1);
+  }
+  if (!isLicensed()) {
+    console.error(color("red", "Cloudflare publishing is a paid feature. Set VKTECH_LICENSE (or VKTECH_PRO=1) in your vktech env."));
+    process.exit(1);
+  }
+  try {
+    if (action === "publish") {
+      if (!ip) { console.error(color("red", "publish requires --ip <addr>")); process.exit(1); }
+      const r = await upsertA(name, ip, { proxied });
+      console.log(color("green", `✓ ${r.action} ${r.name} → ${r.content}`) + color("grey", ` (proxied=${r.proxied})`));
+    } else {
+      const r = await removeA(name);
+      console.log(color("green", `✓ ${r.action} ${r.name}`));
+    }
+  } catch (e) {
+    console.error(color("red", `\nDNS failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// `vktech edit` — automated video-editing engine. Config-driven, zero prompts.
+//   vktech edit --config job.json
+//   vktech edit -d <clips_dir> -o <out.mp4> [--preset memorial|vlog|neutral]
+//               [--captions vision|off] [--encoder auto|libx265|...] [--dry-run]
+async function doEdit(argv) {
+  let configPath = null;
+  const ov = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--config" || a === "-c") configPath = argv[++i];
+    else if (a === "-d" || a === "--input") ov.input = argv[++i];
+    else if (a === "-o" || a === "--output") ov.output = argv[++i];
+    else if (a === "--preset") ov.tone_preset = argv[++i];
+    else if (a === "--encoder") ov.encoder = argv[++i];
+    else if (a === "--captions") ov.captions = { mode: argv[++i] };
+    else if (a === "--dark") ov.dark = { mode: argv[++i] };
+    else if (a === "--dry-run") ov.dry_run = true;
+    else if (a === "--premiere") ov.premiere = true;
+    else if (a === "--runtime") ov.target_runtime_sec = Number(argv[++i]);
+    // Audio questionnaire flags (music track).
+    else if (a === "--audio") { (ov.audio ??= {}).track = argv[++i]; }
+    else if (a === "--speech") { (ov.audio ??= {}).speech_track = argv[++i]; } // enhanced-speech source for the tail
+    else if (a === "--audio-mode") { (ov.audio ??= {}).mode = argv[++i]; }   // replace_all|bed|opening
+    else if (a === "--audio-sync") { (ov.audio ??= {}).sync = argv[++i]; }   // auto|none
+    else if (a === "--audio-opening") { (ov.audio ??= {}).opening_sec = Number(argv[++i]); }
+    else if (a === "--audio-bed-db") { (ov.audio ??= {}).bed_gain_db = Number(argv[++i]); }
+    else if (a === "--no-audio-loop") { (ov.audio ??= {}).loop = false; }
+  }
+  // A bare --audio with no explicit mode defaults to a full soundtrack.
+  if (ov.audio && ov.audio.track && !ov.audio.mode) ov.audio.mode = "replace_all";
+  // Paid gate: rendering requires a license. --dry-run (plan only) stays free
+  // so prospects can evaluate the cut before buying.
+  if (!ov.dry_run && !isLicensed()) {
+    console.error(color("red", "vktech edit is a paid feature.") +
+      color("grey", " Set VKTECH_LICENSE (or VKTECH_PRO=1) to render. Use --dry-run to preview the plan for free, or get access at https://video.vktech.ai"));
+    process.exit(1);
+  }
+
+  if (!configPath && !ov.input) {
+    console.error(color("red", 'Usage: vktech edit --config job.json   OR   vktech edit -d <clips_dir> -o <out.mp4> [--preset ...] [--captions vision|off] [--dry-run]'));
+    process.exit(1);
+  }
+
+  let cfg;
+  try {
+    cfg = loadConfig(configPath, ov);
+  } catch (e) {
+    console.error(color("red", `\n${e.message}\n`));
+    process.exit(1);
+  }
+
+  // Theme-aware logger passed into the pure engine.
+  const log = {
+    step: (m) => console.log(color("heading", `\n▸ ${m}`)),
+    info: (m) => console.log(color("grey", m)),
+    warn: (m) => console.log(color("yellow", m)),
+  };
+
+  console.log(color("chrome", `vktech edit`) + color("grey", `  ${cfg.input} -> ${cfg.output}`));
+  const spin = startSpinner("editing…");
+  try {
+    const res = await runEdit(cfg, { log });
+    spin.stop();
+    if (res.dryRun) {
+      console.log(color("green", `\n✓ Dry run: ${res.segments} segments, ${(res.runtimeSec / 60).toFixed(1)} min planned`));
+      console.log(color("grey", `  plan: ${res.planPath}`));
+    } else {
+      console.log(color("green", `\n✓ Done: ${res.output}`));
+      console.log(color("grey", `  ${(res.runtimeSec / 60).toFixed(1)} min · ${res.segments} segments · ${res.encoder} · ${res.captions} captions · audio:${res.audio} · ${res.verified ? "verified" : res.decodeErrors + " decode errors"}`));
+    }
+    if (res.premiere) {
+      console.log(color("chrome", `  Premiere project:`) + color("grey", ` ${res.premiere.fcpxmlPath}`));
+      console.log(color("grey", `                    ${res.premiere.edlPath}`));
+    }
+  } catch (e) {
+    spin.stop();
+    console.error(color("red", `\nEdit failed: ${e.message}\n`));
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 async function doAudit(argv) {
@@ -971,6 +1204,10 @@ async function main() {
   }
   if (cmd === "run" || cmd === "sh" || cmd === "remote") return doRun(cmd, argv.slice(1));
   if (cmd === "audit") return doAudit(argv.slice(1));
+  if (cmd === "edit") return doEdit(argv.slice(1));
+  if (cmd === "dns") return doDns(argv.slice(1));
+  if (cmd === "identify") return doIdentify(argv.slice(1));
+  if (cmd === "transcribe") return doTranscribe(argv.slice(1));
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));

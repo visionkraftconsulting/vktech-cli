@@ -1,0 +1,82 @@
+name: gitleaks
+
+# Secret scanning gate. Complements the local pre-commit hook
+# (~/Kwasi_Dev/.githooks/pre-commit), which is wired via core.hooksPath —
+# local git config that does NOT survive a fresh clone and does NOT bind
+# collaborators. This job is the control that actually holds.
+#
+# Scope: scans only the commits introduced by this push/PR, not full history.
+# History contains rotated, dead credentials from the 2026-07 incident; scanning
+# it would fail red on every run, and a gate that always fails is a gate everyone
+# learns to ignore. New secrets are what we care about.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff the pushed range
+
+      - name: Install gitleaks
+        run: |
+          VER=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Determine commit range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+          # New branch / force-push / initial commit: before is all-zeros or missing.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "base missing or unborn — scanning HEAD commit only"
+            BASE="$(git rev-parse "$HEAD^" 2>/dev/null || echo "$HEAD")"
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Scan pushed commits for secrets
+        run: |
+          BASE="${{ steps.range.outputs.base }}"
+          HEAD="${{ steps.range.outputs.head }}"
+          echo "scanning $BASE..$HEAD"
+          if [ "$BASE" = "$HEAD" ]; then
+            git show "$HEAD" | gitleaks stdin --redact --verbose
+          else
+            git diff "$BASE".."$HEAD" | gitleaks stdin --redact --verbose
+          fi
+
+      - name: What to do if this failed
+        if: failure()
+        run: |
+          cat <<'EOF'
+          ────────────────────────────────────────────────────────────
+            A secret was found in the commits you just pushed.
+          ────────────────────────────────────────────────────────────
+            Deleting the line is NOT enough — it is in history now.
+
+            1. ROTATE the credential. Assume it is burned.
+            2. Remove it from the code; reference an env var instead.
+            3. If it is a genuine false positive, add a narrow rule to
+               .gitleaks.toml with a comment explaining why.
+          ────────────────────────────────────────────────────────────
+          EOF
+          exit 1

@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vktech video — AI video editing engine</title>
+<meta name="description" content="vktech video turns a folder of raw clips into one finished, captioned, color-graded video — automatically. Multi-format output, AI captions, dark-shot removal.">
+<meta property="og:title" content="vktech video — AI video editing engine">
+<meta property="og:description" content="A folder of clips in. One finished, captioned, graded video out. Fully automated.">
+<meta property="og:image" content="/assets/poster.jpg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<style>
+  :root{
+    --bg:#0c0b12; --panel:#16141f; --panel2:#1d1a2a; --line:#2a2740;
+    --ink:#ece9f5; --muted:#a7a2bd; --dim:#74708c;
+    --accent:#9670e6; --accent2:#b49bf2; --accent-ink:#0c0b12;
+    --ok:#78c882; --radius:16px; --maxw:1120px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 700px at 70% -10%, #1a1630 0%, var(--bg) 55%) no-repeat,var(--bg);
+    color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent2);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  .badge{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--accent2);
+    background:rgba(150,112,230,.12);border:1px solid var(--line);padding:6px 14px;border-radius:999px}
+  .btn{display:inline-block;font-weight:600;border-radius:12px;padding:13px 22px;border:1px solid transparent;cursor:pointer;transition:.15s}
+  .btn-primary{background:linear-gradient(180deg,var(--accent2),var(--accent));color:#100c1c !important;font-weight:700}
+  .btn-primary:hover{filter:brightness(1.07);text-decoration:none;color:#100c1c}
+  .btn-ghost{background:transparent;border-color:var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--accent);text-decoration:none}
+
+  /* Header */
+  header{position:sticky;top:0;z-index:20;backdrop-filter:blur(10px);
+    background:rgba(12,11,18,.7);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;justify-content:space-between;height:62px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.2px}
+  .logo .dot{width:10px;height:10px;border-radius:3px;background:linear-gradient(180deg,var(--accent2),var(--accent))}
+  .logo small{color:var(--dim);font-weight:500}
+  .nav .links{display:flex;gap:26px;align-items:center}
+  .nav .links a{color:var(--muted);font-size:14.5px}
+  .nav .links a:hover{color:var(--ink);text-decoration:none}
+  @media(max-width:720px){.nav .links a:not(.btn){display:none}}
+
+  /* Hero */
+  .hero{padding:72px 0 36px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+  @media(max-width:880px){.hero{grid-template-columns:1fr;padding:48px 0 24px}}
+  .hero h1{font-size:clamp(34px,5vw,56px);line-height:1.05;margin:18px 0 14px;letter-spacing:-1px}
+  .hero h1 .grad{background:linear-gradient(120deg,var(--accent2),#d9c7ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{font-size:18px;color:var(--muted);max-width:46ch}
+  .cta{display:flex;gap:12px;margin-top:26px;flex-wrap:wrap}
+  .pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}
+  .pill{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:5px 12px;background:var(--panel)}
+
+  .media{position:relative;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+    background:#000;box-shadow:0 30px 80px -30px rgba(120,80,220,.5)}
+  .media video{display:block;width:100%;height:auto}
+  .media .tag{position:absolute;top:12px;left:12px;font-size:12px;background:rgba(12,11,18,.7);
+    border:1px solid var(--line);padding:4px 10px;border-radius:8px;color:var(--accent2)}
+  .media,.vert{position:relative}
+  .media video,.vert video{cursor:zoom-in}
+  /* fullscreen affordance shown on hover */
+  .fsbtn{position:absolute;bottom:12px;right:12px;z-index:5;font:600 12.5px/1 inherit;color:var(--ink);
+    background:rgba(12,11,18,.66);border:1px solid var(--line);border-radius:9px;padding:7px 11px;cursor:pointer;
+    opacity:0;transform:translateY(4px);transition:.15s;backdrop-filter:blur(6px)}
+  .media:hover .fsbtn,.vert:hover .fsbtn,.fsbtn:focus-visible{opacity:1;transform:none}
+  .fsbtn:hover{border-color:var(--accent);color:var(--accent2)}
+  @media(hover:none){.fsbtn{opacity:1;transform:none}}
+  /* lightbox overlay */
+  .lb{position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center;
+    background:rgba(6,5,11,.92);backdrop-filter:blur(8px);padding:24px}
+  .lb.open{display:flex}
+  .lb video{max-width:min(96vw,1600px);max-height:90vh;width:auto;height:auto;border-radius:12px;
+    box-shadow:0 40px 120px -40px rgba(120,80,220,.6);background:#000}
+  .lb-close{position:absolute;top:18px;right:22px;z-index:2;font:600 15px/1 inherit;color:var(--ink);
+    background:rgba(22,20,31,.85);border:1px solid var(--line);border-radius:10px;padding:9px 14px;cursor:pointer}
+  .lb-close:hover{border-color:var(--accent);color:var(--accent2)}
+  .lb-hint{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:var(--dim);font-size:12.5px}
+
+  /* Sections */
+  section{padding:54px 0}
+  .eyebrow{color:var(--accent2);font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
+  h2{font-size:clamp(26px,3.4vw,36px);letter-spacing:-.5px;margin:10px 0 8px}
+  .sub{color:var(--muted);max-width:62ch}
+
+  /* Pipeline */
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:30px}
+  @media(max-width:880px){.steps{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:480px){.steps{grid-template-columns:1fr}}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .step .n{font-size:12px;color:var(--accent);font-weight:700;letter-spacing:.1em}
+  .step h3{margin:8px 0 6px;font-size:16px}
+  .step p{margin:0;color:var(--muted);font-size:14px}
+
+  /* Feature grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:30px}
+  @media(max-width:880px){.grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:560px){.grid{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:22px}
+  .card .ico{font-size:22px}
+  .card h3{margin:12px 0 6px;font-size:17px}
+  .card p{margin:0;color:var(--muted);font-size:14.5px}
+
+  /* Formats showcase */
+  .formats{display:grid;grid-template-columns:1.4fr 1fr;gap:34px;align-items:center}
+  @media(max-width:880px){.formats{grid-template-columns:1fr}}
+  .vert{max-width:240px;margin:0 auto;border:1px solid var(--line);border-radius:22px;overflow:hidden;background:#000;
+    box-shadow:0 24px 60px -24px rgba(120,80,220,.55)}
+  .vert video{display:block;width:100%}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  .chip{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:8px 13px;font-size:13.5px;color:var(--muted)}
+  .chip b{color:var(--ink);font-weight:600}
+
+  /* Code */
+  .code{background:#0a0910;border:1px solid var(--line);border-radius:14px;padding:18px 20px;overflow:auto;
+    font:13.5px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin-top:22px}
+  .code .c{color:var(--dim)}.code .p{color:var(--accent2)}.code .s{color:#e6c07b}.code .ok{color:var(--ok)}
+
+  /* Pricing */
+  .price{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:30px}
+  @media(max-width:880px){.price{grid-template-columns:1fr}}
+  .plan{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px;position:relative}
+  .plan.feat{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset, 0 24px 60px -30px rgba(150,112,230,.6)}
+  .plan .name{font-weight:700}
+  .plan .amt{font-size:34px;font-weight:800;margin:10px 0 2px;letter-spacing:-1px}
+  .plan .amt small{font-size:14px;color:var(--dim);font-weight:500}
+  .plan ul{list-style:none;padding:0;margin:16px 0 22px}
+  .plan li{padding:7px 0;color:var(--muted);font-size:14.5px;border-top:1px solid var(--line)}
+  .plan li::before{content:"✓ ";color:var(--ok)}
+  .plan .star{position:absolute;top:-11px;right:18px;font-size:12px;background:var(--accent);color:var(--accent-ink);padding:3px 10px;border-radius:999px;font-weight:700}
+
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--dim);font-size:14px}
+  .foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .note{color:var(--dim);font-size:12.5px;margin-top:10px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <div class="logo"><span class="dot"></span> vktech <small>· video</small></div>
+    <nav class="links">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#formats">Formats</a>
+      <a href="#premiere">Premiere</a>
+      <a href="transcribe.html">Transcription</a>
+      <a href="#pricing">Pricing</a>
+      <a class="btn btn-primary" href="#pricing">Get access</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- HERO -->
+  <section class="hero" style="padding-top:64px">
+    <div>
+      <span class="badge">🎬 Automated editing engine</span>
+      <h1>A folder of clips in.<br><span class="grad">A finished video out.</span></h1>
+      <p class="lead">vktech video edits raw footage automatically — trims the dead and dark
+        shots, writes on-screen captions with AI, color-grades for the mood, and assembles
+        one polished, verified video. No timeline. No prompts.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="#pricing">Get access</a>
+        <a class="btn btn-ghost" href="#how">See how it works</a>
+      </div>
+      <div class="pillrow">
+        <span class="pill">AI captions</span>
+        <span class="pill">Dark-shot removal</span>
+        <span class="pill">4K · vertical · square</span>
+        <span class="pill">One command</span>
+      </div>
+    </div>
+    <div class="media">
+      <span class="tag">auto-edited sample</span>
+      <button class="fsbtn" aria-label="Play full screen">⤢ Full screen</button>
+      <video src="assets/sample-landscape.mp4" poster="assets/poster.jpg"
+        data-full autoplay muted loop playsinline></video>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <span class="eyebrow">Pipeline</span>
+    <h2>Eight stages, zero clicks</h2>
+    <p class="sub">Point it at a directory of clips. It does the rest and verifies the result.</p>
+    <div class="steps">
+      <div class="step"><div class="n">01 · PROBE</div><h3>Understand the footage</h3><p>Reads every clip, sorts by capture time into a timeline.</p></div>
+      <div class="step"><div class="n">02 · PLAN</div><h3>Build the cut</h3><p>Windows long takes to their highlight; targets your runtime.</p></div>
+      <div class="step"><div class="n">03 · CLEAN</div><h3>Remove dark shots</h3><p>Detects and cuts lens-down, covered, and black frames.</p></div>
+      <div class="step"><div class="n">04 · CAPTION</div><h3>AI titles</h3><p>Vision AI reads the scene and writes tasteful on-screen cards.</p></div>
+      <div class="step"><div class="n">05 · GRADE</div><h3>Set the mood</h3><p>Color presets — memorial, cinematic, wedding, vlog & more.</p></div>
+      <div class="step"><div class="n">06 · LEVEL</div><h3>Balance audio</h3><p>Loudness-normalizes every clip to a consistent level.</p></div>
+      <div class="step"><div class="n">07 · ASSEMBLE</div><h3>Stitch losslessly</h3><p>Joins everything into one master, captions composited.</p></div>
+      <div class="step"><div class="n">08 · VERIFY</div><h3>Prove it's clean</h3><p>Full-decode integrity check — zero errors before you get it.</p></div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <span class="eyebrow">Why it's different</span>
+    <h2>Editing that runs itself</h2>
+    <div class="grid">
+      <div class="card"><div class="ico">🧠</div><h3>AI captions, fact-safe</h3><p>Vision models describe the scene and mood — and never invent names or dates. Supply verified text and it always wins.</p></div>
+      <div class="card"><div class="ico">🌒</div><h3>Bad shots, gone</h3><p>Brightness analysis automatically trims pocket shots, covered lenses and black gaps so the cut stays clean.</p></div>
+      <div class="card"><div class="ico">📱</div><h3>Every screen size</h3><p>Render the same story for TV, phone, and feed — 16:9, 9:16, 1:1, 4:5, 21:9 — with smart fill or letterbox.</p></div>
+      <div class="card"><div class="ico">🎨</div><h3>Mood presets</h3><p>Memorial, cinematic, wedding, vlog, B&amp;W, neutral. One word sets the entire color and tone.</p></div>
+      <div class="card"><div class="ico">⚡</div><h3>Fast &amp; parallel</h3><p>Hardware-accelerated encoding with parallel segments. Hours of footage in minutes.</p></div>
+      <div class="card"><div class="ico">✅</div><h3>Verified output</h3><p>Every render is decoded end-to-end and reported clean — no silent corruption.</p></div>
+      <div class="card"><div class="ico">🎬</div><h3>Edit in Premiere</h3><p>Download a Premiere Pro project (FCPXML&nbsp;+&nbsp;EDL) of the exact cut — open it and keep editing, every clip trimmed to the timeline.</p></div>
+      <div class="card"><div class="ico">📝</div><h3>Offline transcription</h3><p>Turn any audio or video into clean <b>.txt</b> and timestamped <b>.srt</b> subtitles — on-device, no upload. <a href="transcribe.html">Learn more →</a></p></div>
+    </div>
+  </section>
+
+  <!-- FORMATS -->
+  <section id="formats">
+    <div class="formats">
+      <div>
+        <span class="eyebrow">One edit, every screen</span>
+        <h2>Made for where it's watched</h2>
+        <p class="sub">The same footage becomes a cinematic landscape film, a vertical reel,
+          or a square post — reframed automatically, captions repositioned to fit.</p>
+        <div class="chips">
+          <span class="chip"><b>16:9</b> TV / YouTube</span>
+          <span class="chip"><b>9:16</b> Reels · Shorts · Stories</span>
+          <span class="chip"><b>1:1</b> Feed</span>
+          <span class="chip"><b>4:5</b> Portrait</span>
+          <span class="chip"><b>21:9</b> Cinematic</span>
+        </div>
+        <div class="code">
+<span class="c"># one command, any format</span>
+$ vktech <span class="p">edit</span> -d ./clips -o reel.mp4 <span class="p">--aspect</span> <span class="s">9:16</span> <span class="p">--preset</span> <span class="s">cinematic</span>
+<span class="ok">✓ Done</span> reel.mp4 · 1080×1920 · captions · verified
+        </div>
+      </div>
+      <div class="vert">
+        <button class="fsbtn" aria-label="Play full screen">⤢ Full screen</button>
+        <video src="assets/sample-vertical.mp4" data-full autoplay muted loop playsinline></video>
+      </div>
+    </div>
+  </section>
+
+  <!-- PREMIERE -->
+  <section id="premiere">
+    <span class="eyebrow">Yours to keep editing</span>
+    <h2>Open it in Premiere Pro</h2>
+    <p class="sub">Every edit ships with a downloadable Premiere Pro project — the full timeline,
+      every clip trimmed to the exact cut. Drop it into Premiere and fine-tune, add graphics,
+      or hand it to your editor. No lock-in.</p>
+    <div class="chips">
+      <span class="chip"><b>FCPXML</b> timeline import</span>
+      <span class="chip"><b>EDL</b> universal fallback</span>
+      <span class="chip"><b>Frame-accurate</b> cut points</span>
+      <span class="chip"><b>Media-linked</b> originals</span>
+    </div>
+    <div class="code">
+<span class="c"># the engine writes the project alongside your video</span>
+$ vktech <span class="p">edit</span> -d ./clips -o film.mp4 <span class="p">--premiere</span>
+<span class="ok">✓ Done</span> film.mp4
+  <span class="c">Premiere project:</span> film.fcpxml  ·  film.edl
+    </div>
+    <div class="cta" style="margin-top:22px">
+      <a class="btn btn-primary" href="#pricing">Get access</a>
+      <a class="btn btn-ghost" href="mailto:hello@vktech.ai?subject=vktech%20video%20Premiere%20export">Ask about Premiere export</a>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section id="pricing">
+    <span class="eyebrow">Pricing</span>
+    <h2>Simple pricing. Cancel anytime.</h2>
+    <p class="sub">A premium engine for studios, agencies, and creators who edit at volume.</p>
+    <div class="price">
+      <div class="plan">
+        <div class="name">Starter</div>
+        <div class="amt">$29<small>/mo</small></div>
+        <ul>
+          <li>Up to 1080p output</li>
+          <li>All formats &amp; presets</li>
+          <li>AI captions</li>
+          <li>Dark-shot removal</li>
+          <li>Transcription — dry-run preview</li>
+        </ul>
+        <a class="btn btn-ghost" style="width:100%;text-align:center" href="https://buy.stripe.com/test_bJe6oz5gu8Zs39QaKfbsc00">Get Starter</a>
+      </div>
+      <div class="plan feat">
+        <span class="star">Most popular</span>
+        <div class="name">Pro</div>
+        <div class="amt">$79<small>/mo</small></div>
+        <ul>
+          <li>Up to 4K, no watermark</li>
+          <li>Premiere project export (FCPXML + EDL)</li>
+          <li>Offline transcription (.txt + .srt)</li>
+          <li>Priority AI captions</li>
+          <li>Dark-shot removal &amp; verify</li>
+          <li>Parallel rendering</li>
+          <li>Email support</li>
+        </ul>
+        <a class="btn btn-primary" style="width:100%;text-align:center" href="https://buy.stripe.com/test_dRmcMX8sG5Ng8uadWrbsc01">Get Pro</a>
+      </div>
+      <div class="plan">
+        <div class="name">Agency</div>
+        <div class="amt">$199<small>/mo</small></div>
+        <ul>
+          <li>Everything in Pro</li>
+          <li>Headless render fleet</li>
+          <li>Batch &amp; webhook API</li>
+          <li>Custom presets &amp; fonts</li>
+          <li>Priority support</li>
+        </ul>
+        <a class="btn btn-ghost" style="width:100%;text-align:center" href="https://buy.stripe.com/test_28E4gr4cq1x0cKqaKfbsc02">Get Agency</a>
+      </div>
+    </div>
+    <p class="note">Secure checkout via Stripe. Cancel anytime. Need a custom plan or API volume? <a href="mailto:hello@vktech.ai">Talk to us</a>.</p>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>© <span id="yr"></span> vktech · <a href="https://vktech.ai">vktech.ai</a></div>
+    <div><a href="mailto:hello@vktech.ai">hello@vktech.ai</a> · <a href="https://vktech.ai">Main site</a></div>
+  </div>
+</footer>
+
+<!-- Fullscreen lightbox -->
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="Video preview">
+  <button class="lb-close" id="lbClose" aria-label="Close">✕ Close</button>
+  <video id="lbVideo" controls playsinline></video>
+  <div class="lb-hint">Press F for true full screen · Esc to close</div>
+</div>
+
+<script>
+  document.getElementById('yr').textContent = new Date().getFullYear();
+
+  // --- Fullscreen / lightbox preview for every sample video -----------------
+  const lb = document.getElementById('lb');
+  const lbVideo = document.getElementById('lbVideo');
+  const lbClose = document.getElementById('lbClose');
+
+  function openLightbox(srcVideo) {
+    lbVideo.src = srcVideo.currentSrc || srcVideo.src;
+    lb.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    lbVideo.muted = false;
+    lbVideo.currentTime = 0;
+    lbVideo.play().catch(() => {});
+  }
+  function closeLightbox() {
+    lb.classList.remove('open');
+    document.body.style.overflow = '';
+    lbVideo.pause();
+    lbVideo.removeAttribute('src');
+    lbVideo.load();
+  }
+  function goTrueFullscreen() {
+    const el = lbVideo;
+    if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.webkitEnterFullscreen) el.webkitEnterFullscreen(); // iOS Safari
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  }
+
+  // Click a sample video, or its "Full screen" button, to open the preview.
+  document.querySelectorAll('video[data-full]').forEach((v) => {
+    v.addEventListener('click', () => openLightbox(v));
+    const btn = v.parentElement.querySelector('.fsbtn');
+    if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); openLightbox(v); });
+  });
+
+  lbClose.addEventListener('click', closeLightbox);
+  lb.addEventListener('click', (e) => { if (e.target === lb) closeLightbox(); });
+  document.addEventListener('keydown', (e) => {
+    if (!lb.classList.contains('open')) return;
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'f' || e.key === 'F') goTrueFullscreen();
+  });
+  // Double-click inside the lightbox -> browser true fullscreen.
+  lbVideo.addEventListener('dblclick', goTrueFullscreen);
+
+  // Checkout is via Stripe Payment Links (direct hrefs on the pricing buttons) —
+  // no backend call needed. Show a thank-you banner when Stripe redirects back.
+  if (new URLSearchParams(location.search).get('checkout') === 'success') {
+    const b = document.createElement('div');
+    b.style.cssText = 'position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:50;background:#16331c;border:1px solid #2f6b3a;color:#cdebd2;padding:12px 18px;border-radius:12px;font:14px sans-serif;box-shadow:0 12px 40px -16px rgba(0,0,0,.6)';
+    b.textContent = '✓ Payment received — welcome to vktech video. Check your email to get started.';
+    document.body.appendChild(b);
+    setTimeout(() => b.remove(), 8000);
+  }
+</script>
+</body>
+</html>

@@ -3,3 +3,17 @@ node_modules/
 *.log
 .DS_Store
 CLAUDE.md
+
+# secret-hygiene hardening (added 2026-06-18)
+*.env.backup*
+*.env.bak*
+.env.*backup*
+*.backup_*
+.ssh/
+*.p8
+*.p12
+*.jks
+*.keystore
+*.pem
+service-account*.json
+google-services.json

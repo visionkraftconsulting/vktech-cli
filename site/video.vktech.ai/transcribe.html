@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vktech transcribe — offline audio & video transcription</title>
+<meta name="description" content="Turn any audio or video into clean text and timestamped .srt subtitles — fully on-device with whisper.cpp. No upload, no API key. Batch a whole folder in one command.">
+<meta property="og:title" content="vktech transcribe — offline transcription">
+<meta property="og:description" content="Any audio or video → clean .txt + timestamped .srt subtitles. 100% on-device. Batch a folder in one command.">
+<meta property="og:image" content="/assets/poster.jpg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📝</text></svg>">
+<style>
+  :root{
+    --bg:#0c0b12; --panel:#16141f; --panel2:#1d1a2a; --line:#2a2740;
+    --ink:#ece9f5; --muted:#a7a2bd; --dim:#74708c;
+    --accent:#9670e6; --accent2:#b49bf2; --accent-ink:#0c0b12;
+    --ok:#78c882; --radius:16px; --maxw:1120px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 700px at 70% -10%, #1a1630 0%, var(--bg) 55%) no-repeat,var(--bg);
+    color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent2);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  .badge{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--accent2);
+    background:rgba(150,112,230,.12);border:1px solid var(--line);padding:6px 14px;border-radius:999px}
+  .btn{display:inline-block;font-weight:600;border-radius:12px;padding:13px 22px;border:1px solid transparent;cursor:pointer;transition:.15s}
+  .btn-primary{background:linear-gradient(180deg,var(--accent2),var(--accent));color:#100c1c !important;font-weight:700}
+  .btn-primary:hover{filter:brightness(1.07);text-decoration:none;color:#100c1c}
+  .btn-ghost{background:transparent;border-color:var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--accent);text-decoration:none}
+
+  /* Header */
+  header{position:sticky;top:0;z-index:20;backdrop-filter:blur(10px);
+    background:rgba(12,11,18,.7);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;justify-content:space-between;height:62px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.2px}
+  .logo a{color:var(--ink)}
+  .logo a:hover{text-decoration:none}
+  .logo .dot{width:10px;height:10px;border-radius:3px;background:linear-gradient(180deg,var(--accent2),var(--accent))}
+  .logo small{color:var(--dim);font-weight:500}
+  .nav .links{display:flex;gap:26px;align-items:center}
+  .nav .links a{color:var(--muted);font-size:14.5px}
+  .nav .links a:hover{color:var(--ink);text-decoration:none}
+  @media(max-width:720px){.nav .links a:not(.btn){display:none}}
+
+  /* Hero */
+  .hero{padding:72px 0 36px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+  @media(max-width:880px){.hero{grid-template-columns:1fr;padding:48px 0 24px}}
+  .hero h1{font-size:clamp(34px,5vw,56px);line-height:1.05;margin:18px 0 14px;letter-spacing:-1px}
+  .hero h1 .grad{background:linear-gradient(120deg,var(--accent2),#d9c7ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{font-size:18px;color:var(--muted);max-width:46ch}
+  .cta{display:flex;gap:12px;margin-top:26px;flex-wrap:wrap}
+  .pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}
+  .pill{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:5px 12px;background:var(--panel)}
+
+  /* Sections */
+  section{padding:54px 0}
+  .eyebrow{color:var(--accent2);font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}
+  h2{font-size:clamp(26px,3.4vw,36px);letter-spacing:-.5px;margin:10px 0 8px}
+  .sub{color:var(--muted);max-width:62ch}
+
+  /* Pipeline steps */
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:30px}
+  @media(max-width:880px){.steps{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:480px){.steps{grid-template-columns:1fr}}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .step .n{font-size:12px;color:var(--accent);font-weight:700;letter-spacing:.1em}
+  .step h3{margin:8px 0 6px;font-size:16px}
+  .step p{margin:0;color:var(--muted);font-size:14px}
+
+  /* Feature grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:30px}
+  @media(max-width:880px){.grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:560px){.grid{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:22px}
+  .card .ico{font-size:22px}
+  .card h3{margin:12px 0 6px;font-size:17px}
+  .card p{margin:0;color:var(--muted);font-size:14.5px}
+
+  /* Two-column showcase (reused from formats) */
+  .split{display:grid;grid-template-columns:1.15fr .85fr;gap:34px;align-items:start}
+  @media(max-width:880px){.split{grid-template-columns:1fr}}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  .chip{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:8px 13px;font-size:13.5px;color:var(--muted)}
+  .chip b{color:var(--ink);font-weight:600}
+
+  /* Transcript sample panel */
+  .sample{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:0;overflow:hidden}
+  .sample .bar{display:flex;gap:8px;align-items:center;padding:11px 15px;border-bottom:1px solid var(--line);background:var(--panel2)}
+  .sample .bar .d{width:11px;height:11px;border-radius:50%}
+  .sample .bar .f{margin-left:8px;color:var(--dim);font:12.5px ui-monospace,Menlo,monospace}
+  .sample pre{margin:0;padding:16px 18px;overflow:auto;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted)}
+  .sample .ts{color:var(--accent2)}
+  .sample .idx{color:var(--dim)}
+
+  /* Code */
+  .code{background:#0a0910;border:1px solid var(--line);border-radius:14px;padding:18px 20px;overflow:auto;
+    font:13.5px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin-top:22px}
+  .code .c{color:var(--dim)}.code .p{color:var(--accent2)}.code .s{color:#e6c07b}.code .ok{color:var(--ok)}
+
+  /* Pricing callout */
+  .callout{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--accent);
+    border-radius:16px;padding:28px;margin-top:30px;box-shadow:0 24px 60px -34px rgba(150,112,230,.55)}
+  .callout h3{margin:0 0 6px;font-size:20px}
+  .callout p{color:var(--muted);margin:0 0 16px}
+
+  /* FAQ */
+  .faq{margin-top:26px;display:grid;gap:12px}
+  details{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px 18px}
+  details summary{cursor:pointer;padding:14px 0;font-weight:600;list-style:none}
+  details summary::-webkit-details-marker{display:none}
+  details summary::before{content:"+ ";color:var(--accent2);font-weight:700}
+  details[open] summary::before{content:"– "}
+  details p{color:var(--muted);margin:0 0 14px;font-size:14.5px}
+
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--dim);font-size:14px}
+  .foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .note{color:var(--dim);font-size:12.5px;margin-top:10px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <div class="logo"><span class="dot"></span> <a href="index.html">vktech <small>· video</small></a></div>
+    <nav class="links">
+      <a href="index.html#how">How it works</a>
+      <a href="index.html#features">Features</a>
+      <a href="index.html#formats">Formats</a>
+      <a href="transcribe.html">Transcription</a>
+      <a href="index.html#pricing">Pricing</a>
+      <a class="btn btn-primary" href="index.html#pricing">Get access</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- HERO -->
+  <section class="hero" style="padding-top:64px">
+    <div>
+      <span class="badge">📝 Offline transcription</span>
+      <h1>Any audio or video.<br><span class="grad">Clean text &amp; subtitles.</span></h1>
+      <p class="lead">vktech transcribe turns a file — or a whole folder — into accurate
+        transcripts and timestamped <b>.srt</b> subtitles. It runs entirely on your machine
+        with whisper.cpp: no upload, no API key, nothing leaves your computer.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="index.html#pricing">Get access</a>
+        <a class="btn btn-ghost" href="#how">See how it works</a>
+      </div>
+      <div class="pillrow">
+        <span class="pill">100% on-device</span>
+        <span class="pill">.txt + .srt</span>
+        <span class="pill">Batch a folder</span>
+        <span class="pill">No API key</span>
+      </div>
+    </div>
+    <div class="sample">
+      <div class="bar">
+        <span class="d" style="background:#e0605e"></span>
+        <span class="d" style="background:#e6c07b"></span>
+        <span class="d" style="background:#78c882"></span>
+        <span class="f">interview.srt</span>
+      </div>
+<pre><span class="idx">1</span>
+<span class="ts">00:00:00,000 --&gt; 00:00:04,120</span>
+Hello, and welcome to the show. Today
+we're talking about on-device AI.
+
+<span class="idx">2</span>
+<span class="ts">00:00:04,120 --&gt; 00:00:08,600</span>
+The best part is nothing ever leaves
+your laptop — it's all local.
+
+<span class="idx">3</span>
+<span class="ts">00:00:08,600 --&gt; 00:00:11,900</span>
+Let's dive right in.</pre>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <span class="eyebrow">Pipeline</span>
+    <h2>One command, four steps</h2>
+    <p class="sub">Point it at a file or a directory. It extracts the audio, transcribes it,
+      and writes the files next to your media.</p>
+    <div class="steps">
+      <div class="step"><div class="n">01 · EXTRACT</div><h3>Pull the audio</h3><p>ffmpeg extracts 16&nbsp;kHz mono audio from any video or audio file.</p></div>
+      <div class="step"><div class="n">02 · TRANSCRIBE</div><h3>Speech to text</h3><p>whisper.cpp runs a local model — accurate, offline, GPU-accelerated on Apple Silicon.</p></div>
+      <div class="step"><div class="n">03 · WRITE</div><h3>.txt &amp; .srt</h3><p>Clean transcript plus a fully timestamped subtitle file, named to match your media.</p></div>
+      <div class="step"><div class="n">04 · COMBINE</div><h3>One master doc</h3><p>Optional — merge every transcript in a folder into one document, headed by filename.</p></div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <span class="eyebrow">Why it's different</span>
+    <h2>Transcription that respects your data</h2>
+    <div class="grid">
+      <div class="card"><div class="ico">🔒</div><h3>Fully on-device</h3><p>Powered by whisper.cpp — audio never leaves your machine. No cloud, no API key, no per-minute fees. Ideal for confidential footage.</p></div>
+      <div class="card"><div class="ico">🎞️</div><h3>Any media, in bulk</h3><p>MP4, MOV, MKV, MP3, WAV, M4A and more. Point it at a folder and it transcribes every file in one command.</p></div>
+      <div class="card"><div class="ico">💬</div><h3>Subtitles ready to ship</h3><p>Timestamped <b>.srt</b> drops straight into Premiere, YouTube, or any player — plus a clean <b>.txt</b> for notes and search.</p></div>
+      <div class="card"><div class="ico">🎚️</div><h3>Pick your accuracy</h3><p>Choose the model — <code>base</code> for speed, <code>small.en</code> by default, <code>medium</code>/<code>large</code> for the toughest audio. Downloaded once.</p></div>
+      <div class="card"><div class="ico">🌍</div><h3>Many languages</h3><p>Transcribe in the source language with <code>--lang</code>, or use the English-tuned models for the sharpest English results.</p></div>
+      <div class="card"><div class="ico">🧩</div><h3>Pairs with editing</h3><p>Same CLI as the editing engine — transcribe your raw clips, then edit and caption them in the same workflow.</p></div>
+    </div>
+  </section>
+
+  <!-- USAGE -->
+  <section id="usage">
+    <div class="split">
+      <div>
+        <span class="eyebrow">One command</span>
+        <h2>From footage to transcript</h2>
+        <p class="sub">Transcribe a single file, or sweep an entire folder and merge the
+          results into one master document. Preview the file list for free with
+          <code>--dry-run</code> before you run.</p>
+        <div class="chips">
+          <span class="chip"><b>--srt</b> subtitles</span>
+          <span class="chip"><b>--combine</b> one master doc</span>
+          <span class="chip"><b>--model</b> accuracy</span>
+          <span class="chip"><b>--lang</b> source language</span>
+          <span class="chip"><b>--dry-run</b> free preview</span>
+        </div>
+        <div class="code">
+<span class="c"># a single talk → talk.txt</span>
+$ vktech <span class="p">transcribe</span> talk.mp4
+
+<span class="c"># a whole folder → .txt + .srt + one combined document</span>
+$ vktech <span class="p">transcribe</span> ./videos <span class="p">--srt</span> <span class="p">--combine</span>
+<span class="ok">✓ transcribed 13 file(s)</span> → ./videos
+   combined → ALL_TRANSCRIPTS_COMBINED.txt
+
+<span class="c"># preview which files would run — free, no license needed</span>
+$ vktech <span class="p">transcribe</span> ./videos <span class="p">--dry-run</span>
+</div>
+      </div>
+      <div>
+        <div class="callout">
+          <h3>📝 Included with Pro</h3>
+          <p>Offline transcription ships with the <b>Pro</b> and <b>Agency</b> plans.
+            The Starter plan can preview the file list with <code>--dry-run</code> for free.</p>
+          <a class="btn btn-primary" style="width:100%;text-align:center" href="index.html#pricing">See pricing</a>
+        </div>
+        <p class="note">Requires <code>ffmpeg</code> and <code>whisper-cpp</code> on your
+          machine (<code>brew install ffmpeg whisper-cpp</code>). The transcription model is
+          downloaded once, automatically, on first run.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq">
+    <span class="eyebrow">FAQ</span>
+    <h2>Questions</h2>
+    <div class="faq">
+      <details>
+        <summary>Does my audio get uploaded anywhere?</summary>
+        <p>No. Transcription runs entirely on your own machine using whisper.cpp. Nothing is
+          sent to any server — there's no API key and no per-minute cost. It works fully offline.</p>
+      </details>
+      <details>
+        <summary>What formats can I transcribe?</summary>
+        <p>Any common audio or video file — MP4, MOV, MKV, WEBM, AVI, M4V, MP3, WAV, M4A, AAC,
+          FLAC, OGG, OPUS. Point it at a folder and it transcribes every media file inside.</p>
+      </details>
+      <details>
+        <summary>How accurate is it, and can I make it more accurate?</summary>
+        <p>The default <code>small.en</code> model is accurate for clear English speech. For
+          tougher audio or technical terms, pass <code>--model medium</code> or
+          <code>--model large-v3</code>. Models download once and are cached locally.</p>
+      </details>
+      <details>
+        <summary>Can I get subtitles as well as plain text?</summary>
+        <p>Yes — add <code>--srt</code> for a fully timestamped subtitle file alongside the
+          <code>.txt</code>, or <code>--srt-only</code> for just subtitles. Use
+          <code>--combine</code> to merge a folder's transcripts into one document.</p>
+      </details>
+      <details>
+        <summary>What do I need installed?</summary>
+        <p><code>ffmpeg</code> and <code>whisper-cpp</code> on your PATH
+          (<code>brew install ffmpeg whisper-cpp</code> on macOS). The vktech CLI handles the
+          rest, including downloading the model on first use.</p>
+      </details>
+    </div>
+    <div class="cta" style="margin-top:28px">
+      <a class="btn btn-primary" href="index.html#pricing">Get access</a>
+      <a class="btn btn-ghost" href="mailto:hello@vktech.ai?subject=vktech%20transcribe">Ask a question</a>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>© <span id="yr"></span> vktech · <a href="https://vktech.ai">vktech.ai</a></div>
+    <div><a href="mailto:hello@vktech.ai">hello@vktech.ai</a> · <a href="index.html">vktech video</a></div>
+  </div>
+</footer>
+
+<script>
+  document.getElementById('yr').textContent = new Date().getFullYear();
+</script>
+</body>
+</html>

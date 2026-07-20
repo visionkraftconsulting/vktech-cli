@@ -11,22 +11,41 @@ const DEFAULTS = {
 
 // Vision-capable model per provider (used by `ask --image`). Separate from the
 // text DEFAULTS because not every text model accepts images. Override via env.
+// `local` is a self-hosted Ollama vision model (zero per-call API cost) —
+// see LOCAL_VISION_URL / LOCAL_VISION_MODEL below.
 const VISION_DEFAULTS = {
+  local: process.env.LOCAL_VISION_MODEL || "llama3.2-vision",
   xai: process.env.XAI_VISION_MODEL || "grok-4.3",
   anthropic: process.env.ANTHROPIC_VISION_MODEL || "claude-opus-4-8",
   openai: process.env.OPENAI_VISION_MODEL || "gpt-5",
 };
 
-// Fallback order for vision requests: Grok first, Claude second, OpenAI third.
-// (Gemini is omitted — order set per product requirement.) Override via
-// VKTECH_VISION_PRIORITY="anthropic,openai,xai".
+// Self-hosted Ollama endpoint for `local` vision. Defaults to localhost; point
+// at a GPU droplet, e.g. LOCAL_VISION_URL=http://<gpu-droplet-ip>:11434
+const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://127.0.0.1:11434";
+
+// VKTECH_VISION_LOCAL_ONLY=true → use ONLY the self-hosted model, never fall
+// back to paid APIs. This enforces strictly $0 per-call vision (the default
+// posture for this CLI). Set to false to allow the grok→claude→openai cascade.
+const VISION_LOCAL_ONLY = /^(1|true|yes)$/i.test(
+  process.env.VKTECH_VISION_LOCAL_ONLY || "true"
+);
+export { VISION_LOCAL_ONLY };
+
+// Fallback order for vision requests. Self-hosted `local` is tried first so
+// vision is free by default; the paid cascade (grok→claude→openai) follows
+// only when VKTECH_VISION_LOCAL_ONLY=false. Override via
+// VKTECH_VISION_PRIORITY="local,anthropic,openai,xai".
 const VISION_PRIORITY = (process.env.VKTECH_VISION_PRIORITY
   ? process.env.VKTECH_VISION_PRIORITY.split(",").map((s) => s.trim()).filter(Boolean)
-  : ["xai", "anthropic", "openai"]);
+  : (VISION_LOCAL_ONLY ? ["local"] : ["local", "xai", "anthropic", "openai"]));
 export { VISION_PRIORITY };
 
 // Map user-typed aliases to a canonical provider key.
 const ALIASES = {
+  local: "local",
+  ollama: "local",
+  "self-hosted": "local",
   openai: "openai",
   gpt: "openai",
   "gpt-5": "openai",
@@ -295,12 +314,20 @@ async function askAnthropic({ prompt, system, model, signal }) {
 }
 
 // Which env var holds each provider's API key (also used by availableProviders).
+// `local` (Ollama) needs no key — it's gated on reachability, not credentials.
 const KEY_ENV = {
   openai: "OPENAI_API_KEY",
   gemini: "GEMINI_API_KEY",
   xai: "XAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
 };
+
+// True when a vision provider is usable: keyless providers (local) are always
+// "configured"; the rest require their API key to be present.
+function visionConfigured(provider) {
+  if (provider === "local") return true;
+  return !!process.env[KEY_ENV[provider]];
+}
 
 // ---- Vision (image input) ----------------------------------------------
 // Each takes images: [{ mime, dataB64 }]. xAI + OpenAI share the Chat
@@ -375,7 +402,29 @@ async function askAnthropicVision({ prompt, system, model, images, signal }) {
   return parts.map((p) => p.text || "").join("").trim() || "(empty response)";
 }
 
-const VISION_IMPL = { xai: askXaiVision, anthropic: askAnthropicVision, openai: askOpenAIVision };
+// ---- Self-hosted Ollama vision (zero per-call API cost) ----------------
+// Talks to Ollama's /api/chat. Ollama wants images as bare base64 strings on
+// the message (NOT the OpenAI image_url shape), so we build its native body.
+// No API key — availability is purely "is the server reachable".
+async function askLocalVision({ prompt, system, model, images, signal }) {
+  const url = `${LOCAL_VISION_URL.replace(/\/+$/, "")}/api/chat`;
+  const body = await httpJson(url, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [
+        ...(system ? [{ role: "system", content: system }] : []),
+        { role: "user", content: prompt, images: images.map((img) => img.dataB64) },
+      ],
+    }),
+  });
+  return body?.message?.content?.trim() || "(empty response)";
+}
+
+const VISION_IMPL = { local: askLocalVision, xai: askXaiVision, anthropic: askAnthropicVision, openai: askOpenAIVision };
 
 // Run a vision prompt, trying providers in VISION_PRIORITY (grok→claude→openai)
 // until one with a configured key succeeds. Returns { provider, model, text }.
@@ -385,15 +434,16 @@ export async function askVision({ prompt, system, images, modelArg, signal }) {
   // Explicit --model picks the provider; otherwise cascade.
   const order = modelArg
     ? [resolveProvider(modelArg)].filter((p) => p && VISION_IMPL[p])
-    : VISION_PRIORITY.filter((p) => VISION_IMPL[p] && process.env[KEY_ENV[p]]);
+    : VISION_PRIORITY.filter((p) => VISION_IMPL[p] && visionConfigured(p));
   if (!order.length) {
     throw new Error(
-      "No vision-capable provider configured. Set one of XAI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY."
+      "No vision-capable provider configured. Run a self-hosted model (set LOCAL_VISION_URL) " +
+      "or set one of XAI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY."
     );
   }
   const errors = [];
   for (const provider of order) {
-    if (!process.env[KEY_ENV[provider]]) { errors.push(`${provider}: no key`); continue; }
+    if (!visionConfigured(provider)) { errors.push(`${provider}: not configured`); continue; }
     const model = modelArg && resolveProvider(modelArg) === provider
       ? modelIdFor(provider, modelArg)
       : VISION_DEFAULTS[provider];

@@ -71,7 +71,44 @@ vktech audit hipaa-iso --all -d ./my-app   # all providers -> one report
 vktech code "Implement the fixes Grok suggested in src/order.js"
 vktech providers                    # key/model status
 vktech --help
+
+# Offline speech-to-text (whisper.cpp) — audio/video -> .txt / .srt  (paid)
+vktech transcribe ./videos --dry-run           # free: preview the file list
+vktech transcribe talk.mp4                     # one file -> talk.txt
+vktech transcribe ./videos --srt --combine     # whole folder -> .txt + .srt + combined doc
+vktech transcribe podcast.m4a -m medium.en     # higher-accuracy model
+
+# Automated video-editing engine (premium) — folder of clips -> finished video
+vktech edit -d ./clips -o ./out/final.mp4 --preset memorial --captions vision
+vktech edit --config job.json       # full control via JSON
+vktech edit -d ./clips -o ./out/x.mp4 --dry-run   # plan only
 ```
+
+### Transcription
+
+`vktech transcribe <file|dir>` runs fully offline speech-to-text via
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) — no API key, no upload.
+Per file it extracts 16 kHz mono audio with `ffmpeg`, then whisper-cli writes a
+`.txt` (default) and/or `.srt` beside it. A directory input transcribes every
+audio/video file inside; `--combine` also concatenates all `.txt` into one
+`ALL_TRANSCRIPTS_COMBINED.txt` master document.
+
+Requires `ffmpeg` and `whisper-cpp` on PATH (`brew install ffmpeg whisper-cpp`).
+The ggml model (default `small.en`) is auto-downloaded once to
+`~/.config/vktech/models/`. Override with `--model <name|path.bin>` or
+`VKTECH_WHISPER_MODEL`. Flags: `--srt`, `--srt-only`, `--combine`, `--lang <code>`,
+`-o <out_dir>`, `--dry-run`.
+
+**Paid feature** — set `VKTECH_LICENSE` (or `VKTECH_PRO=1`) in your vktech env to run
+transcription. `--dry-run` previews the file list for free without a license.
+
+### Video editing engine
+
+`vktech edit` is an automated, config-driven video editor: probe → plan → remove
+dark/blocked shots → AI-generated captions → grade + loudness-normalize → assemble →
+verify. Supports multiple screen sizes (16:9, 9:16 vertical, 1:1, 4:5, 21:9) and tone
+presets (memorial, vlog, cinematic, bw, wedding, neutral). Requires `ffmpeg` on PATH.
+See **[docs/EDIT_ENGINE.md](docs/EDIT_ENGINE.md)** for the full config schema and options.
 
 ### REPL commands
 
