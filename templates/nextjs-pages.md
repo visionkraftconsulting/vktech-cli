@@ -1,6 +1,6 @@
 ---
-name: sgastretch-pages
-title: sgaStretch web pages review (Next.js app router)
+name: nextjs-pages
+title: Next.js App Router page-by-page review
 model: gemini
 include:
   - app/**/page.tsx
