@@ -7,14 +7,23 @@ const DEFAULTS = {
   gemini: process.env.GEMINI_MODEL || "gemini-2.5-pro",
   xai: process.env.XAI_MODEL || "grok-4",
   anthropic: process.env.ANTHROPIC_MODEL || "claude-opus-4-8",
+  // Self-hosted Ollama on the WINDOWS box (free, private). Coding-tuned by
+  // default. NOT a Claude replacement — for quick/offline/private analysis.
+  // Reached over the tailnet (CLI on the Mac -> Ollama on sga-bridge).
+  local: process.env.LOCAL_MODEL || "qwen2.5-coder:7b",
 };
+
+// Ollama text endpoint (OpenAI-compatible /v1). Same host as vision by default.
+const LOCAL_URL = process.env.LOCAL_URL
+  || process.env.LOCAL_VISION_URL
+  || "http://100.119.9.25:11434";
 
 // Vision-capable model per provider (used by `ask --image`). Separate from the
 // text DEFAULTS because not every text model accepts images. Override via env.
 // `local` is a self-hosted Ollama vision model (zero per-call API cost) —
 // see LOCAL_VISION_URL / LOCAL_VISION_MODEL below.
 const VISION_DEFAULTS = {
-  local: process.env.LOCAL_VISION_MODEL || "llama3.2-vision",
+  local: process.env.LOCAL_VISION_MODEL || "qwen2.5vl:7b",
   xai: process.env.XAI_VISION_MODEL || "grok-4.3",
   anthropic: process.env.ANTHROPIC_VISION_MODEL || "claude-opus-4-8",
   openai: process.env.OPENAI_VISION_MODEL || "gpt-5",
@@ -22,7 +31,7 @@ const VISION_DEFAULTS = {
 
 // Self-hosted Ollama endpoint for `local` vision. Defaults to localhost; point
 // at a GPU droplet, e.g. LOCAL_VISION_URL=http://<gpu-droplet-ip>:11434
-const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://127.0.0.1:11434";
+const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://100.119.9.25:11434";
 
 // VKTECH_VISION_LOCAL_ONLY=true → use ONLY the self-hosted model, never fall
 // back to paid APIs. This enforces strictly $0 per-call vision (the default
@@ -65,10 +74,12 @@ const ALIASES = {
 
 // Default analysis-provider priority order (highest first). The REPL boots on the
 // first entry whose key is configured; aggregate runs iterate in this order.
-// Override with VKTECH_PRIORITY="xai,anthropic,openai,gemini".
+// Override with VKTECH_PRIORITY="anthropic,xai,openai,gemini,local".
+// Claude (anthropic) leads for coding/analysis quality; self-hosted `local`
+// (Ollama) trails as the free fallback / second opinion.
 const PRIORITY = (process.env.VKTECH_PRIORITY
   ? process.env.VKTECH_PRIORITY.split(",").map((s) => s.trim()).filter(Boolean)
-  : ["xai", "anthropic", "openai", "gemini"]);
+  : ["anthropic", "xai", "openai", "gemini", "local"]);
 export { PRIORITY };
 
 export function resolveProvider(modelArg) {
@@ -264,6 +275,28 @@ async function askGemini({ prompt, system, model, signal }) {
 }
 
 // ---- xAI Grok (OpenAI-compatible Chat Completions) ----
+// ---- Local Ollama (OpenAI-compatible /v1, no key, self-hosted) ----
+async function askLocal({ prompt, system, model, signal }) {
+  const url = `${LOCAL_URL.replace(/\/+$/, "")}/v1/chat/completions`;
+  const key = "ollama"; // ignored by Ollama, required by the OpenAI shape
+  if (prompt.length >= STREAM_THRESHOLD) {
+    return streamChatCompletions({ url, key, model, prompt, system, signal });
+  }
+  const body = await httpJson(url, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        ...(system ? [{ role: "system", content: system }] : []),
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+  return body?.choices?.[0]?.message?.content?.trim() || "(empty response)";
+}
+
 async function askXai({ prompt, system, model, signal }) {
   const key = process.env.XAI_API_KEY;
   if (!key) throw new Error("XAI_API_KEY is not set in .env");
@@ -458,7 +491,7 @@ export async function askVision({ prompt, system, images, modelArg, signal }) {
   throw new Error(`All vision providers failed:\n  ${errors.join("\n  ")}`);
 }
 
-const IMPL = { openai: askOpenAI, gemini: askGemini, xai: askXai, anthropic: askAnthropic };
+const IMPL = { openai: askOpenAI, gemini: askGemini, xai: askXai, anthropic: askAnthropic, local: askLocal };
 
 export async function ask({ modelArg, prompt, system, signal }) {
   const provider = resolveProvider(modelArg);
@@ -474,7 +507,8 @@ export async function ask({ modelArg, prompt, system, signal }) {
 
 // Runnable providers, returned in PRIORITY order (entries not in PRIORITY trail after).
 export function availableProviders() {
-  const runnable = Object.keys(IMPL).filter((p) => !!process.env[KEY_ENV[p]]);
+  // `local` (Ollama) is keyless — always runnable; the rest need their API key.
+  const runnable = Object.keys(IMPL).filter((p) => p === "local" || !!process.env[KEY_ENV[p]]);
   const ranked = PRIORITY.filter((p) => runnable.includes(p));
   const rest = runnable.filter((p) => !PRIORITY.includes(p));
   return [...ranked, ...rest];
