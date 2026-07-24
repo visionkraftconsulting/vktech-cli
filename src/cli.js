@@ -38,6 +38,7 @@ const { upsertA, removeA, isLicensed } = await import("./edit/cloudflare.js");
 const { identify, fmt } = await import("./edit/identify.js");
 const { transcribe, collectInputs: listTranscribable } = await import("./transcribe.js");
 const { runSecrets } = await import("./secrets.js");
+const { webSearch } = await import("./search.js");
 
 // ── Theme ────────────────────────────────────────────────────────────────
 // "Full look & feel" palette modeled on the Claude Code TUI: one signature
@@ -464,6 +465,7 @@ ${color("bold", "USAGE")}
   vktech transcribe <file|dir>       Offline speech-to-text (whisper.cpp): .txt/.srt (paid; --dry-run free)
   vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech secrets [-d dir] [--history] Scan working tree (+git history) for leaked secrets
+  vktech search "<query>"            Web search (self-hosted SearXNG) answered by local Ollama; --raw, --native
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Hand off to Claude Code to implement
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
@@ -758,6 +760,52 @@ async function doIdentify(argv) {
 //                     [--combine] [-o out_dir] [--lang en] [--dry-run]
 // Default output is .txt beside the input; add --srt for subtitles, --combine
 // to also write ALL_TRANSCRIPTS_COMBINED.txt when transcribing a directory.
+// vktech search "<query>" [-m model] [-n N] [--raw] [--native]
+//   Web search for the local Ollama. Default backend = self-hosted SearXNG
+//   (LAN-first, tailnet fallback): many results, multi-engine, deep page fetch,
+//   no rate limits. --native uses Ollama's cloud web_search API (needs OLLAMA_API_KEY).
+//   --raw prints results only (no LLM). -n = # pages to deep-fetch (default 3).
+async function doSearch(argv) {
+  let model = null, fetchN = 3, raw = false, native = false;
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "-m" || a === "--model") model = argv[++i];
+    else if (a === "-n" || a === "--fetch") fetchN = Number(argv[++i]);
+    else if (a === "--raw") raw = true;
+    else if (a === "--native") native = true;
+    else rest.push(a);
+  }
+  const query = rest.join(" ").trim();
+  if (!query) {
+    console.error(color("red", 'Usage: vktech search "<query>" [-m model] [-n N] [--raw] [--native]'));
+    process.exit(1);
+  }
+  const spin = startSpinner(native ? "searching (ollama cloud)…" : "searching (searxng)…");
+  const t0 = Date.now();
+  try {
+    const { answer, results, backend, model: usedModel } = await webSearch(query, { model, fetchN, raw, native });
+    spin.stop();
+    if (raw) {
+      console.log(color("cyan", `\n[${backend}] ${results.length} results\n`));
+      for (const r of results) {
+        console.log(color("heading", `• ${r.title}`));
+        console.log(color("grey", `  ${r.url}`));
+        if (r.content) console.log(`  ${r.content.slice(0, 300)}`);
+        console.log("");
+      }
+      return;
+    }
+    console.log(color("cyan", `\n[${backend} · ${usedModel}]\n`));
+    console.log(answer + "\n");
+    statusFooter({ provider: "search", model: usedModel, ms: Date.now() - t0, chars: (answer || "").length });
+  } catch (err) {
+    spin.stop();
+    console.error(color("red", `\nsearch error: ${err.message}\n`));
+    process.exit(1);
+  }
+}
+
 // PAID feature (VKTECH_LICENSE / VKTECH_PRO=1). --dry-run lists inputs for free.
 async function doTranscribe(argv) {
   let input = null, model = null, outDir = null, lang = "en";
@@ -1211,6 +1259,7 @@ async function main() {
   if (cmd === "identify") return doIdentify(argv.slice(1));
   if (cmd === "transcribe") return doTranscribe(argv.slice(1));
   if (cmd === "secrets" || cmd === "secret-audit") return runSecrets(argv.slice(1), { color, heading: (t) => color("heading", t) });
+  if (cmd === "search" || cmd === "web") return doSearch(argv.slice(1));
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));
