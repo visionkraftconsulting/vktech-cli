@@ -7,16 +7,17 @@ const DEFAULTS = {
   gemini: process.env.GEMINI_MODEL || "gemini-2.5-pro",
   xai: process.env.XAI_MODEL || "grok-4",
   anthropic: process.env.ANTHROPIC_MODEL || "claude-opus-4-8",
-  // Self-hosted Ollama on the WINDOWS box (free, private). Coding-tuned by
-  // default. NOT a Claude replacement — for quick/offline/private analysis.
-  // Reached over the tailnet (CLI on the Mac -> Ollama on sga-bridge).
+  // Self-hosted Ollama on the rtx5090 GPU box (free, private, GPU-backed) —
+  // the DEFAULT provider, see PRIORITY below. Coding-tuned model by default.
+  // Reached over the tailnet (CLI on the Mac -> Ollama on rtx5090).
   local: process.env.LOCAL_MODEL || "qwen2.5-coder:7b",
 };
 
 // Ollama text endpoint (OpenAI-compatible /v1). Same host as vision by default.
+// `rtx5090` on the tailnet — needs Tailscale up on the Mac.
 const LOCAL_URL = process.env.LOCAL_URL
   || process.env.LOCAL_VISION_URL
-  || "http://100.119.9.25:11434";
+  || "http://100.75.226.84:11434";
 
 // Vision-capable model per provider (used by `ask --image`). Separate from the
 // text DEFAULTS because not every text model accepts images. Override via env.
@@ -29,9 +30,9 @@ const VISION_DEFAULTS = {
   openai: process.env.OPENAI_VISION_MODEL || "gpt-5",
 };
 
-// Self-hosted Ollama endpoint for `local` vision. Defaults to localhost; point
-// at a GPU droplet, e.g. LOCAL_VISION_URL=http://<gpu-droplet-ip>:11434
-const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://100.119.9.25:11434";
+// Self-hosted Ollama endpoint for `local` vision — the rtx5090 GPU box on the
+// tailnet. Override with LOCAL_VISION_URL=http://<host>:11434
+const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://100.75.226.84:11434";
 
 // VKTECH_VISION_LOCAL_ONLY=true → use ONLY the self-hosted model, never fall
 // back to paid APIs. This enforces strictly $0 per-call vision (the default
@@ -74,12 +75,13 @@ const ALIASES = {
 
 // Default analysis-provider priority order (highest first). The REPL boots on the
 // first entry whose key is configured; aggregate runs iterate in this order.
-// Override with VKTECH_PRIORITY="anthropic,xai,openai,gemini,local".
-// Claude (anthropic) leads for coding/analysis quality; self-hosted `local`
-// (Ollama) trails as the free fallback / second opinion.
+// Override with VKTECH_PRIORITY="local,anthropic,xai,openai,gemini".
+// Self-hosted `local` (Ollama on the rtx5090) LEADS: it's free, private, and
+// GPU-backed, so it's the default for everything. The paid cloud cascade
+// (claude→grok→gpt→gemini) follows for the heavier asks `local` can't carry.
 const PRIORITY = (process.env.VKTECH_PRIORITY
   ? process.env.VKTECH_PRIORITY.split(",").map((s) => s.trim()).filter(Boolean)
-  : ["anthropic", "xai", "openai", "gemini", "local"]);
+  : ["local", "anthropic", "xai", "openai", "gemini"]);
 export { PRIORITY };
 
 export function resolveProvider(modelArg) {
@@ -94,12 +96,19 @@ export function resolveProvider(modelArg) {
   return null;
 }
 
-// Lets `--model gpt-5` or `--model gpt-4o` pass the exact id through to the API,
-// while a bare alias (`openai`) falls back to the configured default.
-function modelIdFor(provider, modelArg) {
+// True when modelArg is a bare provider alias ("local", "claude") rather than a
+// concrete model id ("qwen2.5vl:7b") — i.e. it names WHICH provider to use, not
+// WHICH model. Callers pick the right per-mode default for those.
+function isProviderAlias(provider, modelArg) {
   const key = String(modelArg || "").toLowerCase().trim();
-  const isAlias = Object.prototype.hasOwnProperty.call(ALIASES, key) && ALIASES[key] === provider;
-  if (!modelArg || isAlias) return DEFAULTS[provider];
+  return Object.prototype.hasOwnProperty.call(ALIASES, key) && ALIASES[key] === provider;
+}
+
+// Lets `--model gpt-5` or `--model gpt-4o` pass the exact id through to the API,
+// while a bare alias (`openai`) falls back to the configured TEXT default.
+// The vision path resolves aliases against VISION_DEFAULTS instead — see askVision.
+function modelIdFor(provider, modelArg) {
+  if (!modelArg || isProviderAlias(provider, modelArg)) return DEFAULTS[provider];
   return modelArg; // explicit model id, pass through
 }
 
@@ -477,9 +486,13 @@ export async function askVision({ prompt, system, images, modelArg, signal }) {
   const errors = [];
   for (const provider of order) {
     if (!visionConfigured(provider)) { errors.push(`${provider}: not configured`); continue; }
-    const model = modelArg && resolveProvider(modelArg) === provider
-      ? modelIdFor(provider, modelArg)
-      : VISION_DEFAULTS[provider];
+    // A bare alias (`-m local`) only selects the provider — still use that
+    // provider's VISION model, not its text default, or Ollama rejects the
+    // request ("model does not support multimodal requests").
+    const explicitId = modelArg
+      && resolveProvider(modelArg) === provider
+      && !isProviderAlias(provider, modelArg);
+    const model = explicitId ? modelArg : VISION_DEFAULTS[provider];
     try {
       const text = await VISION_IMPL[provider]({ prompt, system, model, images, signal });
       return { provider, model, text };

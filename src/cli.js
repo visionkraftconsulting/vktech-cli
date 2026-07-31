@@ -27,7 +27,8 @@ for (const path of ENV_SOURCES) {
   if (existsSync(path)) dotenv.config({ path });
 }
 
-const { ask, askVision, askAll, availableProviders, PROVIDERS, DEFAULTS, resolveProvider } = await import("./providers.js");
+const { ask, askVision, askAll, availableProviders, PROVIDERS, DEFAULTS, resolveProvider,
+  PRIORITY, VISION_PRIORITY, VISION_LOCAL_ONLY } = await import("./providers.js");
 const { runClaude } = await import("./claude.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
@@ -530,18 +531,25 @@ ${color("bold", "THEME")}
 
 function showProviders() {
   console.log(color("bold", "\nConfigured providers:\n"));
-  // Listed in default priority order: grok › claude › openai › gemini.
-  const rows = [
-    ["xAI",       "XAI_API_KEY",       DEFAULTS.xai],
-    ["Anthropic", "ANTHROPIC_API_KEY", DEFAULTS.anthropic],
-    ["OpenAI",    "OPENAI_API_KEY",    DEFAULTS.openai],
-    ["Gemini",    "GEMINI_API_KEY",    DEFAULTS.gemini],
-  ];
-  for (const [name, env, model] of rows) {
-    const ok = !!process.env[env];
-    const status = ok ? color("green", "✓ key set") : color("red", "✗ no key");
-    console.log(`  ${name.padEnd(10)} ${status.padEnd(20)} ${color("dim", model)}`);
+  // Listed in real PRIORITY order so the first ✓ row is what actually runs by
+  // default. `local` is keyless (self-hosted Ollama) — it's gated on the box
+  // being reachable, not on a key, so it never shows "no key".
+  const META = {
+    local:     ["Local/GPU", null],
+    anthropic: ["Anthropic", "ANTHROPIC_API_KEY"],
+    xai:       ["xAI",       "XAI_API_KEY"],
+    openai:    ["OpenAI",    "OPENAI_API_KEY"],
+    gemini:    ["Gemini",    "GEMINI_API_KEY"],
+  };
+  for (const p of PRIORITY.filter((p) => META[p])) {
+    const [name, env] = META[p];
+    const status = !env
+      ? color("green", "✓ keyless")
+      : (process.env[env] ? color("green", "✓ key set") : color("red", "✗ no key"));
+    console.log(`  ${name.padEnd(10)} ${status.padEnd(20)} ${color("dim", DEFAULTS[p])}`);
   }
+  console.log(color("dim", `\n  default: ${PRIORITY.find((p) => p === "local" || process.env[META[p]?.[1]]) || "none"}`
+    + ` · vision: ${VISION_PRIORITY[0] || "none"}${VISION_LOCAL_ONLY ? " (local-only)" : ""}`));
   const claudeBin = process.env.CLAUDE_BIN || "claude";
   console.log(`\n  ${color("chrome", "Claude Code")} (implementation) via "${claudeBin}"`);
   console.log(`  ${color("dim", "theme:")} ${color("accent", THEME_NAME)} ${color("dim", "(VKTECH_THEME=violet|coral)")}\n`);
