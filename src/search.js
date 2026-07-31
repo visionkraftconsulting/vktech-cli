@@ -13,7 +13,11 @@ const SEARXNG_ENDPOINTS = [
   "http://100.84.124.110:8888",        // Dell tailnet fallback
 ].filter(Boolean);
 
-const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
+// Ollama lives on the rtx5090 GPU box (tailnet), not on the Mac — so default
+// there rather than localhost. Matches LOCAL_URL in providers.js.
+const OLLAMA_HOST = process.env.OLLAMA_HOST
+  || process.env.LOCAL_URL
+  || "http://100.75.226.84:11434";
 
 async function fetchWithTimeout(url, opts = {}, ms = 15000) {
   const ctl = new AbortController();
