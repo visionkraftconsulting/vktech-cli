@@ -17,7 +17,7 @@ const SEARXNG_ENDPOINTS = [
 // there rather than localhost. Matches LOCAL_URL in providers.js.
 const OLLAMA_HOST = process.env.OLLAMA_HOST
   || process.env.LOCAL_URL
-  || "http://100.75.226.84:11434";
+  || "http://100.80.136.28:11434";
 
 async function fetchWithTimeout(url, opts = {}, ms = 15000) {
   const ctl = new AbortController();
@@ -64,7 +64,7 @@ async function searchNative(query) {
 }
 
 // Deep-fetch a page and crudely strip it to plain-ish text.
-async function fetchPage(url) {
+async function fetchPage(url, max = 2000) {
   try {
     const r = await fetchWithTimeout(url, { headers: { "User-Agent": "Mozilla/5.0 vktech-search" } }, 12000);
     const html = await r.text();
@@ -75,10 +75,30 @@ async function fetchPage(url) {
       .replace(/&nbsp;/g, " ")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 2000);
+      .slice(0, max);
   } catch {
     return "";
   }
+}
+
+// Search hits only — no second model call. The REPL agent reads these and answers.
+export async function searchResults(query, opts = {}) {
+  const { base, results } = opts.native ? await searchNative(query) : await searchSearxng(query);
+  const limit = opts.limit ?? 8;
+  return {
+    backend: opts.native ? "ollama-cloud" : `searxng (${base})`,
+    results: (results || []).slice(0, limit),
+  };
+}
+
+// Plain text of one http(s) page, for the agent to read.
+export async function fetchWebText(url, max = 8000) {
+  const u = new URL(String(url || ""));
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error("only http and https URLs");
+  }
+  const text = await fetchPage(u.toString(), max);
+  return text || "(empty page)";
 }
 
 async function ollamaAnswer(model, prompt) {

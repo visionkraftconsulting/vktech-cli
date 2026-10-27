@@ -2,22 +2,86 @@
 // Each provider exposes async ask({ prompt, system, model, signal }) -> string.
 // Uses native global fetch (Node >=18).
 
+import { askGrokCli, useGrokCli } from "./grok.js";
+
 const DEFAULTS = {
   openai: process.env.OPENAI_MODEL || "gpt-5",
   gemini: process.env.GEMINI_MODEL || "gemini-2.5-pro",
-  xai: process.env.XAI_MODEL || "grok-4",
+  // In CLI mode leave this unset so the `grok` CLI picks its own current
+  // default (grok-4.6 today) — the old hardcoded "grok-4" is not a model the
+  // CLI offers. Pin an explicit id with XAI_MODEL. `null` means "let the CLI
+  // decide"; XAI_DISPLAY_MODEL below is what the UI shows for it.
+  xai: process.env.XAI_MODEL || (useGrokCli() ? null : "grok-4"),
   anthropic: process.env.ANTHROPIC_MODEL || "claude-opus-4-8",
   // Self-hosted Ollama on the rtx5090 GPU box (free, private, GPU-backed) —
-  // the DEFAULT provider, see PRIORITY below. Coding-tuned model by default.
-  // Reached over the tailnet (CLI on the Mac -> Ollama on rtx5090).
-  local: process.env.LOCAL_MODEL || "qwen2.5-coder:7b",
+  // the DEFAULT provider, see PRIORITY below, and the model behind `vktech code`.
+  // qwen3.8:27b (Q4_K_M, tools + vision) is already on the box. Reached over the
+  // tailnet (CLI on the Mac -> Ollama on rtx5090, GPU 0).
+  local: process.env.LOCAL_MODEL || "qwen3.8:27b",
 };
 
 // Ollama text endpoint (OpenAI-compatible /v1). Same host as vision by default.
 // `rtx5090` on the tailnet — needs Tailscale up on the Mac.
-const LOCAL_URL = process.env.LOCAL_URL
+export const LOCAL_URL = process.env.LOCAL_URL
   || process.env.LOCAL_VISION_URL
-  || "http://100.75.226.84:11434";
+  || "http://100.80.136.28:11434";
+
+// Context shared with every other caller of qwen3.8:27b. Ollama reloads the
+// whole model when num_ctx changes (15–40s) and will not reload while another
+// request holds the runner — a vktech call at a different size queues forever
+// behind sgaBackstop's live CAPTCHA / browser agent. 32768 is the size that
+// client pins (sgaBackstop lib/localLlm.ts). 128k fits the card, but it is a
+// different runner, so it is not the default. Set LOCAL_NUM_CTX to force one.
+const SHARED_NUM_CTX = 32768;
+
+export function localTextOptions() {
+  const ctx = Number(process.env.LOCAL_NUM_CTX || SHARED_NUM_CTX);
+  const temperature = process.env.LOCAL_TEMPERATURE === undefined || process.env.LOCAL_TEMPERATURE === ""
+    ? 0.3
+    : Number(process.env.LOCAL_TEMPERATURE);
+  const num_predict = Number(process.env.LOCAL_NUM_PREDICT || 4096);
+  return {
+    num_ctx: Number.isFinite(ctx) && ctx >= 2048 ? ctx : SHARED_NUM_CTX,
+    temperature: Number.isFinite(temperature) ? temperature : 0.3,
+    num_predict: Number.isFinite(num_predict) && num_predict > 0 ? num_predict : 4096,
+  };
+}
+
+// Prefer the context the model is already loaded with, so this call joins the
+// hot runner instead of reloading it. An explicit LOCAL_NUM_CTX wins.
+export async function localNumCtx(model) {
+  const pinned = Number(process.env.LOCAL_NUM_CTX || 0);
+  if (Number.isFinite(pinned) && pinned >= 2048) return pinned;
+  try {
+    const res = await fetch(`${LOCAL_URL.replace(/\/+$/, "")}/api/ps`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const want = model || DEFAULTS.local;
+      const hit = (data.models || []).find((m) => m.name === want || m.model === want);
+      const ctx = Number(hit?.context_length);
+      if (Number.isFinite(ctx) && ctx >= 2048) return ctx;
+    }
+  } catch {
+    /* unloaded, or the box didn't answer — fall through to the shared size */
+  }
+  return SHARED_NUM_CTX;
+}
+
+export function localKeepAlive() {
+  return process.env.LOCAL_KEEP_ALIVE || "30m";
+}
+
+function localBodyExtras(numCtx) {
+  return {
+    // Thinking models put the answer in `thinking` and leave `content` empty
+    // unless this is explicit. Tool calls were verified with think off.
+    think: /^(1|true|yes)$/i.test(process.env.LOCAL_THINK || ""),
+    keep_alive: localKeepAlive(),
+    options: { ...localTextOptions(), num_ctx: numCtx },
+  };
+}
 
 // Vision-capable model per provider (used by `ask --image`). Separate from the
 // text DEFAULTS because not every text model accepts images. Override via env.
@@ -32,7 +96,7 @@ const VISION_DEFAULTS = {
 
 // Self-hosted Ollama endpoint for `local` vision — the rtx5090 GPU box on the
 // tailnet. Override with LOCAL_VISION_URL=http://<host>:11434
-const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://100.75.226.84:11434";
+const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://100.80.136.28:11434";
 
 // VKTECH_VISION_LOCAL_ONLY=true → use ONLY the self-hosted model, never fall
 // back to paid APIs. This enforces strictly $0 per-call vision (the default
@@ -112,6 +176,16 @@ function modelIdFor(provider, modelArg) {
   return modelArg; // explicit model id, pass through
 }
 
+// Human-readable model label for a provider, for --help / `vktech providers` /
+// the REPL prompt. DEFAULTS.xai is deliberately null in grok-CLI mode (the CLI
+// picks its own default), so show that rather than printing "null".
+export function displayModel(provider) {
+  const id = DEFAULTS[provider];
+  if (id) return id;
+  if (provider === "xai" && useGrokCli()) return "grok CLI default";
+  return "(provider default)";
+}
+
 const TIMEOUT_MS = Number(process.env.VKTECH_TIMEOUT_MS || 180_000); // 3 min for large audits
 const RETRIES = Number(process.env.VKTECH_RETRIES || 2);
 
@@ -185,7 +259,7 @@ async function streamChatCompletions(opts) {
   throw lastErr;
 }
 
-async function streamOnce({ url, key, model, prompt, system, signal }) {
+async function streamOnce({ url, key, model, prompt, system, signal, extra }) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(new Error("stream timeout")), TIMEOUT_MS);
   if (signal) signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
@@ -201,6 +275,7 @@ async function streamOnce({ url, key, model, prompt, system, signal }) {
           ...(system ? [{ role: "system", content: system }] : []),
           { role: "user", content: prompt },
         ],
+        ...(extra || {}),
       }),
     });
     if (!res.ok) {
@@ -283,30 +358,76 @@ async function askGemini({ prompt, system, model, signal }) {
   return parts.map((p) => p.text || "").join("").trim() || "(empty response)";
 }
 
-// ---- xAI Grok (OpenAI-compatible Chat Completions) ----
+// ---- xAI Grok (`grok` CLI by default; OpenAI-compatible HTTP as fallback) ----
 // ---- Local Ollama (OpenAI-compatible /v1, no key, self-hosted) ----
-async function askLocal({ prompt, system, model, signal }) {
-  const url = `${LOCAL_URL.replace(/\/+$/, "")}/v1/chat/completions`;
-  const key = "ollama"; // ignored by Ollama, required by the OpenAI shape
-  if (prompt.length >= STREAM_THRESHOLD) {
-    return streamChatCompletions({ url, key, model, prompt, system, signal });
+// Native /api/chat, not /v1. The OpenAI shim drops `options.num_ctx`, so a /v1
+// call falls back to the server's 8192 and then waits to reload the model while
+// another caller holds qwen3.8:27b at a different context.
+async function streamNativeChat({ url, body, signal }) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error("stream timeout")), TIMEOUT_MS);
+  if (signal) signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: ac.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, stream: true }),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`${res.status} ${res.statusText}: ${t.slice(0, 500)}`);
+    }
+    const decoder = new TextDecoder();
+    let buf = "";
+    let out = "";
+    for await (const chunk of res.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          const json = JSON.parse(line);
+          const delta = json?.message?.content;
+          if (delta) out += delta;
+        } catch {
+          /* partial line */
+        }
+      }
+    }
+    return out.trim() || "(empty response)";
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function askLocal({ prompt, system, model, signal }) {
+  const url = `${LOCAL_URL.replace(/\/+$/, "")}/api/chat`;
+  const payload = {
+    model,
+    messages: [
+      ...(system ? [{ role: "system", content: system }] : []),
+      { role: "user", content: prompt },
+    ],
+    ...localBodyExtras(await localNumCtx(model)),
+  };
+  if (prompt.length >= STREAM_THRESHOLD) return streamNativeChat({ url, body: payload, signal });
   const body = await httpJson(url, {
     method: "POST",
     signal,
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      messages: [
-        ...(system ? [{ role: "system", content: system }] : []),
-        { role: "user", content: prompt },
-      ],
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, stream: false }),
   });
-  return body?.choices?.[0]?.message?.content?.trim() || "(empty response)";
+  const msg = body?.message;
+  return msg?.content?.trim() || msg?.thinking?.trim() || "(empty response)";
 }
 
 async function askXai({ prompt, system, model, signal }) {
+  // Subscription path: shell out to the `grok` CLI, which carries its own auth
+  // (`grok login`) and so needs no XAI_API_KEY. XAI_BACKEND=api opts back out.
+  if (useGrokCli()) return askGrokCli({ prompt, system, model, signal });
   const key = process.env.XAI_API_KEY;
   if (!key) throw new Error("XAI_API_KEY is not set in .env");
   const url = "https://api.x.ai/v1/chat/completions";
@@ -364,8 +485,17 @@ const KEY_ENV = {
   anthropic: "ANTHROPIC_API_KEY",
 };
 
-// True when a vision provider is usable: keyless providers (local) are always
-// "configured"; the rest require their API key to be present.
+// True when a provider is usable: keyless providers are always "configured";
+// the rest require their API key. `local` (Ollama) is self-hosted, and `xai` in
+// CLI mode carries its own `grok login` auth — neither needs a key here.
+export function providerConfigured(provider) {
+  if (provider === "local") return true;
+  if (provider === "xai" && useGrokCli()) return true;
+  return !!process.env[KEY_ENV[provider]];
+}
+
+// True when a vision provider is usable. The grok CLI has no image-input path,
+// so xAI vision still needs XAI_API_KEY even when text runs through the CLI.
 function visionConfigured(provider) {
   if (provider === "local") return true;
   return !!process.env[KEY_ENV[provider]];
@@ -510,18 +640,21 @@ export async function ask({ modelArg, prompt, system, signal }) {
   const provider = resolveProvider(modelArg);
   if (!provider) {
     throw new Error(
-      `Unknown model "${modelArg}". Use one of: grok/xai, claude/anthropic, gpt-5/openai, gemini (or an explicit model id like gpt-4o or claude-opus-4-8).`
+      `Unknown model "${modelArg}". Use one of: local/ollama, grok/xai, claude/anthropic, gpt-5/openai, gemini (or an explicit model id like qwen3.8:27b or gpt-4o).`
     );
   }
   const model = modelIdFor(provider, modelArg);
   const out = await IMPL[provider]({ prompt, system, model, signal });
-  return { provider, model, text: out };
+  // `model` is null when the provider picks its own (grok CLI); report the
+  // display label so callers never render "xai:null".
+  return { provider, model: model || displayModel(provider), text: out };
 }
 
 // Runnable providers, returned in PRIORITY order (entries not in PRIORITY trail after).
 export function availableProviders() {
-  // `local` (Ollama) is keyless — always runnable; the rest need their API key.
-  const runnable = Object.keys(IMPL).filter((p) => p === "local" || !!process.env[KEY_ENV[p]]);
+  // `local` (Ollama) and `xai` in grok-CLI mode are keyless — always runnable;
+  // the rest need their API key.
+  const runnable = Object.keys(IMPL).filter((p) => providerConfigured(p));
   const ranked = PRIORITY.filter((p) => runnable.includes(p));
   const rest = runnable.filter((p) => !PRIORITY.includes(p));
   return [...ranked, ...rest];
@@ -535,11 +668,14 @@ export async function askAll({ prompt, system, providers, signal }) {
   const results = await Promise.all(
     targets.map(async (provider) => {
       const model = DEFAULTS[provider];
+      // As in `ask`: null means the provider chooses (grok CLI), so report a
+      // label rather than null in the consolidated report.
+      const label = model || displayModel(provider);
       try {
         const text = await IMPL[provider]({ prompt, system, model, signal });
-        return { provider, model, ok: true, text };
+        return { provider, model: label, ok: true, text };
       } catch (err) {
-        return { provider, model, ok: false, error: err.message };
+        return { provider, model: label, ok: false, error: err.message };
       }
     })
   );

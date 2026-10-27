@@ -1,8 +1,9 @@
 # vktech
 
-**Multi-provider AI analysis CLI & library** — query OpenAI, Google Gemini, and xAI Grok for
-code & architecture analysis, then hand the actual implementation off to
-[Claude Code](https://claude.com/claude-code). One tool, three opinions, a clean handoff.
+**Multi-provider AI analysis CLI & library** — query OpenAI, Google Gemini, xAI Grok, or the
+RTX 5090's Ollama for code and architecture analysis. Implementation defaults to that
+same Ollama agent (`qwen3.8:27b`). `--claude` still hands a prompt to
+[Claude Code](https://claude.com/claude-code).
 
 ```
 ────────────────────────────────────────────────────────────────
@@ -10,15 +11,22 @@ code & architecture analysis, then hand the actual implementation off to
 ────────────────────────────────────────────────────────────────
 ```
 
-- 🎛 **Three providers, one interface** — `gpt-5`, `gemini`, `grok` (or any explicit model id).
+- 🎛 **Multiple providers, one interface** — `gpt-5`, `gemini`, `grok` (via the `grok` CLI),
+  `claude`, `local` (or any explicit model id).
 - 🧑‍⚖️ **`--all` fan-out** — ask every configured provider in parallel and get one consolidated
   report; agreements are high-confidence, disagreements are flagged for review.
 - 📋 **Audit templates** — curated prompt + file bundle for HIPAA/ISO, security, prod-readiness,
   architecture. `audit auto` detects the project's industry and picks the frameworks.
-- 💬 **Modern REPL** — violet themed, live framed input box, Braille spinner, elapsed/token
-  footer, multi-line bracketed paste, history, Ctrl-C cancel.
-- 🤝 **Claude Code handoff** — `vktech code "…"` (or `/code` in the REPL) shells out to the
-  `claude` CLI to implement what the analysis surfaced.
+- 💬 **Modern REPL** — the default `vktech` chat is the RTX agent: it edits the
+  working directory, runs commands, searches the web, and checks the GPU.
+  Every session loads memories from Claude, Grok, Codex, Cursor, and Gemini,
+  and each prompt searches those notes for the words you used.
+  The input window stays pinned to the bottom and redraws to the terminal width.
+  Conversations are saved per folder as the turn runs, so quitting mid-command
+  resumes on the next launch. `/history` lists them, `/history <n>`
+  continues one, `/new` starts fresh. Up/Down recalls what you typed.
+- 🤝 **RTX coding agent** — `vktech code "…"` (or `/code` in the REPL) is the same
+  agent as a one-shot. `vktech code --claude "…"` uses Claude Code instead.
 
 ---
 
@@ -46,15 +54,35 @@ in one of these locations (first match wins; real `process.env` always overrides
 # ~/.config/vktech/.env
 OPENAI_API_KEY=sk-…
 GEMINI_API_KEY=…
-XAI_API_KEY=…
+# XAI_API_KEY is only needed with XAI_BACKEND=api (see below) — the default
+# `grok` CLI path uses the CLI's own login instead.
 # optional model overrides
 OPENAI_MODEL=gpt-5
 GEMINI_MODEL=gemini-2.5-pro
-XAI_MODEL=grok-4
-CLAUDE_BIN=claude          # path to the Claude Code CLI for `vktech code`
+# XAI_MODEL=grok-4.6       # unset => let the grok CLI pick its default
+LOCAL_MODEL=qwen3.8:27b    # RTX Ollama model for analysis and `vktech code`
+# LOCAL_NUM_CTX=32768      # unset = join the loaded runner; set only to force one
+CLAUDE_BIN=claude          # only used by `vktech code --claude`
 ```
 
 Only the providers whose keys are set are used — `vktech providers` shows status.
+
+### xAI via the `grok` CLI (default)
+
+`grok` requests shell out to the installed **`grok` CLI** rather than `api.x.ai`, so they
+spend your Grok **subscription** instead of API credits. Run `grok login` once; no
+`XAI_API_KEY` is needed. `vktech providers` shows `✓ grok CLI` for xAI in this mode.
+
+| Env | Effect |
+| --- | --- |
+| *(unset)* | CLI path (default) |
+| `XAI_BACKEND=api` | use `api.x.ai` with `XAI_API_KEY` instead |
+| `GROK_BIN` | path to the `grok` binary (default: `grok`) |
+| `XAI_MODEL` | pin a model id (see `grok models`); unset = the CLI's default |
+
+Note the CLI's model ids differ from the old API ones — `grok-4.6` / `grok-4.5`, not
+`grok-4`. Image input (`ask -i`) has no CLI path, so xAI **vision** still uses
+`api.x.ai` and needs `XAI_API_KEY` (vision is local-only by default regardless).
 
 ## Usage
 
@@ -110,15 +138,39 @@ verify. Supports multiple screen sizes (16:9, 9:16 vertical, 1:1, 4:5, 21:9) and
 presets (memorial, vlog, cinematic, bw, wedding, neutral). Requires `ffmpeg` on PATH.
 See **[docs/EDIT_ENGINE.md](docs/EDIT_ENGINE.md)** for the full config schema and options.
 
+### Repo awareness: "status" in any repo
+
+In the REPL, or with `vktech code`, ask `status`, `progress`, `catch me up`, `what did claude work on last` or
+`check on <topic>`. vktech first gathers, read-only and in about a second:
+- git: branch, uncommitted files, recent commits and branches;
+- GitHub: open and merged PRs, and issues;
+- prod: an HTTPS check of the repo's site;
+- the Claude memory for this repo;
+- the last Claude Code sessions run in this folder: what was asked, the files edited, the commits, PRs and deploys,
+  and how the final message ended.
+
+The local model then writes a short report: **Last worked on / Current state / Open & next**. Follow-up questions
+are answered from that report. Replies are rendered Markdown, colour-coded by status (red = blocked or failed,
+yellow = open or waiting, green = done or healthy).
+
+- Prod URL for a repo vktech doesn't know: add `.vktech/status.json` with `{"urls": ["https://…"]}`.
+- AWS boxes for the `aws_ssm` tool: `~/.config/vktech/ssm-hosts.json` with `{"name": "i-…"}`.
+- Private, site-specific checks (internal hosts or case details that must not be in this repo): drop a module in
+  `~/.config/vktech/checks/*.mjs`. The contract is in `src/checks.js`.
+
 ### REPL commands
 
 | Command | Action |
 |---|---|
 | *(plain text)* | analyze with the active provider |
-| `/model <m>` | switch provider (`gpt-5`, `gemini`, `grok`) |
+| `/model <m>` | switch provider (`local`, `ollama`, `grok`, `claude`, `gpt-5`, `gemini`) |
 | `/file <path>` | load a file into the next prompt |
-| `/code <text>` | hand off to Claude Code |
-| `/providers` | list providers |
+| `/code <text>` | implement with the RTX Ollama agent (`/code --claude` for Claude Code) |
+| `/providers` | list providers and mark the active one |
+| `/providers <name>` | switch provider (`local`, `ollama`, `grok`, `claude`, `gpt-5`, `gemini`). Tools run on `local`. |
+| `/history` | list saved conversations for this folder |
+| `/history <n>` | print that conversation and continue it |
+| `/new` | start a fresh conversation |
 | `/help` · `/exit` | help · quit |
 
 **Editing** (in the input box): `←`/`→`/`Home`/`End` move · `Alt`+`←`/`→` move by word ·

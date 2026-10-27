@@ -45,5 +45,9 @@ export { listTemplates, loadTemplate, buildPrompt } from "./templates.js";
 // Industry detection used by `vktech audit auto`.
 export { detectIndustry, INDUSTRIES } from "./industry.js";
 
-// Claude Code handoff (shells out to the `claude` CLI).
+// Claude Code handoff (shells out to the `claude` CLI). Optional; `vktech code`
+// defaults to the RTX Ollama agent.
 export { runClaude } from "./claude.js";
+export { runLocalAgent } from "./agent.js";
+export { memoryBrief, memoriesForPrompt, readMemory } from "./memories.js";
+export { checkReplies, isReplyCheck } from "./replies.js";

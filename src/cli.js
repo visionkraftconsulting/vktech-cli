@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// vktech — multi-provider AI analysis CLI that hands code work to Claude Code.
+// vktech — multi-provider AI analysis CLI. Code work defaults to the RTX Ollama agent.
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, isAbsolute, basename } from "node:path";
 // dirname is already imported above for __dirname; reused for output paths.
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { createInterface, cursorTo, clearLine, emitKeypressEvents } from "node:readline";
 import dotenv from "dotenv";
 
@@ -28,8 +28,11 @@ for (const path of ENV_SOURCES) {
 }
 
 const { ask, askVision, askAll, availableProviders, PROVIDERS, DEFAULTS, resolveProvider,
-  PRIORITY, VISION_PRIORITY, VISION_LOCAL_ONLY } = await import("./providers.js");
+  PRIORITY, VISION_PRIORITY, VISION_LOCAL_ONLY, displayModel,
+  providerConfigured, LOCAL_URL } = await import("./providers.js");
+const { useGrokCli } = await import("./grok.js");
 const { runClaude } = await import("./claude.js");
+const { runLocalAgent, toolResultPreview } = await import("./agent.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
 const { readSnippet, runLocalJs, runLocalShell, runRemote } = await import("./run.js");
@@ -40,65 +43,23 @@ const { identify, fmt } = await import("./edit/identify.js");
 const { transcribe, collectInputs: listTranscribable } = await import("./transcribe.js");
 const { runSecrets } = await import("./secrets.js");
 const { webSearch } = await import("./search.js");
+const { memoryBrief, memoriesForPrompt } = await import("./memories.js");
+const { checkReplies, isReplyCheck, replyFocus } = await import("./replies.js");
+const {
+  createSession, saveSession, latestSession, listSessions, loadSession,
+  loadLineHistory, saveLineHistory, appendTranscript, upsertLiveTranscript,
+} = await import("./sessions.js");
 
-// ── Theme ────────────────────────────────────────────────────────────────
-// "Full look & feel" palette modeled on the Claude Code TUI: one signature
-// accent carries headings/prompt/borders, with muted secondary chrome, dim
-// grey metadata, and the usual success/warn/error states. Two named themes —
-// `violet` (default) and `coral` (Claude-orange) — selectable via
-// VKTECH_THEME=violet|coral. Truecolor escapes by default; 256-color fallback
-// when the terminal can't do 24-bit (NO_COLOR disables color entirely).
-const TRUECOLOR = !process.env.NO_COLOR &&
-  /truecolor|24bit/i.test(process.env.COLORTERM || "");
-const NO_COLOR = !!process.env.NO_COLOR;
-
-// Each entry: [truecolor RGB, 256-color index].
-const THEMES = {
-  violet: {
-    accent:  ["\x1b[38;2;150;110;230m", "\x1b[38;5;141m"], // violet — prompt, accents, borders
-    heading: ["\x1b[38;2;180;150;245m", "\x1b[38;5;147m"], // brighter lilac — section headings
-    chrome:  ["\x1b[38;2;190;170;235m", "\x1b[38;5;183m"], // muted lilac — secondary labels
-    grey:    ["\x1b[38;2;120;120;135m", "\x1b[38;5;243m"], // dim metadata
-    green:   ["\x1b[38;2;120;200;130m", "\x1b[38;5;114m"], // success
-    yellow:  ["\x1b[38;2;230;190;100m", "\x1b[38;5;179m"], // warning
-    red:     ["\x1b[38;2;225;110;110m", "\x1b[38;5;167m"], // error
-  },
-  coral: {
-    accent:  ["\x1b[38;2;217;119;87m",  "\x1b[38;5;173m"], // Claude coral — prompt, accents, borders
-    heading: ["\x1b[38;2;227;139;108m", "\x1b[38;5;209m"], // brighter coral-rose — section headings
-    chrome:  ["\x1b[38;2;215;175;135m", "\x1b[38;5;180m"], // muted tan/sand — secondary labels
-    grey:    ["\x1b[38;2;120;120;135m", "\x1b[38;5;243m"], // dim metadata
-    green:   ["\x1b[38;2;120;200;130m", "\x1b[38;5;114m"], // success
-    yellow:  ["\x1b[38;2;230;190;100m", "\x1b[38;5;179m"], // warning
-    red:     ["\x1b[38;2;225;110;110m", "\x1b[38;5;167m"], // error
-  },
-};
-const THEME_NAME = (process.env.VKTECH_THEME || "violet").toLowerCase() in THEMES
-  ? (process.env.VKTECH_THEME || "violet").toLowerCase()
-  : "violet";
-const PALETTE = THEMES[THEME_NAME];
-
-const C = {
-  reset: NO_COLOR ? "" : "\x1b[0m",
-  bold: NO_COLOR ? "" : "\x1b[1m",
-  dim: NO_COLOR ? "" : "\x1b[2m",
-};
-for (const [name, [tc, fb]] of Object.entries(PALETTE)) {
-  C[name] = NO_COLOR ? "" : (TRUECOLOR ? tc : fb);
-}
-// Back-compat aliases for the old color names used throughout the file.
-C.lilac = C.chrome;    // legacy name kept for any external refs
-C.cyan = C.accent;     // old "cyan" headers/model tags -> theme accent
-C.magenta = C.chrome;  // old "magenta" Claude-handoff lines -> chrome
-
-const color = (c, s) => NO_COLOR ? `${s}` : `${C[c]}${s}${C.reset}`;
+// ── Theme ─ (palette lives in src/theme.js, shared with the reply renderer)
+const { TRUECOLOR, NO_COLOR, THEMES, THEME_NAME, PALETTE, C, color } = await import("./theme.js");
+const { renderMarkdown } = await import("./render.js");
 
 // Visible length of a string, ignoring ANSI escape sequences.
 const visLen = (s) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
 
-// Terminal width, clamped to something sane for piped/non-TTY output.
+// Live terminal width. A cap here left the rules short of a wide window.
 function termWidth() {
-  return Math.max(20, Math.min(process.stdout.columns || 80, 200));
+  return Math.max(20, process.stdout.columns || 80);
 }
 
 // Rounded box-drawn welcome banner, sized to the terminal (ASCII fallback
@@ -118,7 +79,9 @@ function banner(lines) {
 // (set as the readline prompt by the caller), and a closing rule printed once
 // the line is submitted. `rule()` draws one horizontal divider in the accent.
 function rule() {
-  return color("accent", "─".repeat(termWidth()));
+  // Leave the last column empty. A rule of exactly `columns` chars wraps,
+  // and the following newline then paints a second blank row.
+  return color("accent", "─".repeat(Math.max(1, termWidth() - 1)));
 }
 
 // ── Async spinner ──────────────────────────────────────────────────────────
@@ -156,277 +119,382 @@ function statusFooter({ provider, model, ms, chars }) {
   const approxTokens = Math.max(1, Math.round(chars / 4));
   const text = `△ ${ms}ms · ~${approxTokens} tok · ${provider}:${model}`;
   if (NO_COLOR) return console.log(text);
-  const pad = Math.max(0, termWidth() - visLen(text));
+  const pad = Math.max(0, termWidth() - 1 - visLen(text));
   console.log(" ".repeat(pad) + color("grey", text));
 }
 
-// ── Boxed line editor ───────────────────────────────────────────────────────
-// A raw-mode replacement for readline so the input "❯" caret can live inside a
-// live 3-line violet box (rule / caret+text / rule), both rules visible while
-// typing — readline can't do this because it clears below its own prompt line.
+// ── Pinned composer ─────────────────────────────────────────────────────────
+// A permanent input window on the bottom rows, like the Grok composer. The
+// conversation scrolls in the region above it. The box is drawn with absolute
+// cursor addresses, never cursor-up, so a repaint cannot erase scrollback.
+// Rules are redrawn from the live width on every keystroke and on resize.
 // Supports: printable input, Backspace, Left/Right/Home/End, Up/Down history,
 // Enter (submit), Ctrl-C (abort line), Ctrl-D (EOF on empty line). Falls back to
 // plain readline when stdin isn't an interactive TTY (pipes, NO_COLOR scripts).
-function makeBoxedReader({ historyRef, promptLabel }) {
+function openComposer({ historyRef, promptLabel }) {
   const stdin = process.stdin;
   const out = process.stdout;
   const interactive = stdin.isTTY && out.isTTY && !NO_COLOR;
 
   // Plain (non-TTY) fallback: one readline question with a leading rule.
   if (!interactive) {
-    return (close) => new Promise((resolve) => {
-      const rl = createInterface({ input: stdin, output: out });
-      console.log(rule());
-      rl.question(`${promptLabel()} `, (answer) => { rl.close(); resolve({ line: answer, eof: false }); });
-      rl.on("close", () => { if (close) close(); });
-    });
+    return {
+      read() {
+        return new Promise((resolve) => {
+          const rl = createInterface({ input: stdin, output: out });
+          console.log(rule());
+          rl.question(`${promptLabel()} `, (answer) => {
+            rl.close();
+            resolve({ line: answer, eof: false });
+          });
+        });
+      },
+      close() {},
+    };
   }
 
-  return () => new Promise((resolve) => {
-    let buf = "";
-    let pos = 0;            // cursor index within buf
-    let hist = -1;          // -1 = current (unsaved) line; else index into history
-    let stash = "";         // holds the in-progress line while browsing history
-    let pasting = false;    // inside a bracketed-paste burst
-    let prevLines = 0;      // box height drawn last render (for clean repaint)
-    const history = historyRef;
+  const history = historyRef;
+  const state = {
+    buf: "",
+    pos: 0,
+    hist: -1,
+    stash: "",
+    pasting: false,
+    listening: false,
+    closed: false,
+    scrollBottom: 0,
+    boxTop: 0,
+    resizeTimer: null,
+    paintedLens: [],
+    onKey: null,
+  };
+  // Pastes above this size collapse to a one-line chip. The full text stays
+  // in `buf` and is what gets submitted.
+  const COLLAPSE_CHARS = 1800;
+
+  const screenRows = () => Math.max(8, out.rows || 24);
+  const isCollapsed = () => state.buf.length > COLLAPSE_CHARS;
+  const summaryText = () => {
+    const nl = (state.buf.match(/\n/g) || []).length + 1;
+    return `[pasted ${state.buf.length.toLocaleString()} chars · ${nl} lines · Enter to send]`;
+  };
+  // Usable width stops one column early so a full rule cannot wrap.
+  const metrics = () => {
+    const labelLen = visLen(promptLabel()) + 1;
+    const width = Math.max(8, termWidth() - 1);
+    const inner = Math.max(1, width - labelLen);
+    return { labelLen, width, inner };
+  };
+  const collapsedCol = () => {
+    const { labelLen } = metrics();
+    const s = summaryText();
+    const pos = state.pos;
+    const buf = state.buf;
+    return labelLen + (pos <= 0 ? 0 : pos >= buf.length ? s.length : Math.round((pos / buf.length) * s.length));
+  };
+
+  // Wrap the buffer into display rows. The first row is indented past the
+  // label. Returns { rows, curRow, curCol }.
+  const layout = () => {
+    const { labelLen, width, inner } = metrics();
+    const buf = state.buf;
+    const pos = state.pos;
+    if (isCollapsed()) {
+      return { rows: [color("chrome", summaryText())], curRow: 0, curCol: collapsedCol() };
+    }
+    const rows = [];
+    let cur = "";
+    let curRow = 0;
+    let curCol = labelLen;
+    const pushCol = (i) => {
+      if (i === pos) {
+        curRow = rows.length;
+        curCol = (rows.length === 0 ? labelLen : 0) + cur.length;
+      }
+    };
+    for (let i = 0; i < buf.length; i++) {
+      pushCol(i);
+      const ch = buf[i];
+      const rowCap = rows.length === 0 ? inner : width;
+      if (ch === "\n") { rows.push(cur); cur = ""; continue; }
+      cur += ch;
+      if (cur.length >= rowCap) { rows.push(cur); cur = ""; }
+    }
+    pushCol(buf.length);
+    rows.push(cur);
+    if (rows.length === 0) rows.push("");
+    return { rows, curRow, curCol };
+  };
+
+  // Map a visual (row, column) back to a buffer index for Up/Down.
+  const posAtRow = (targetRow, desiredCol) => {
+    const { labelLen, width, inner } = metrics();
+    const buf = state.buf;
+    const spans = [];
+    let start = 0;
+    let len = 0;
+    let rowIdx = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const ch = buf[i];
+      const rowCap = rowIdx === 0 ? inner : width;
+      if (ch === "\n") { spans.push({ start, len }); rowIdx++; start = i + 1; len = 0; continue; }
+      len++;
+      if (len >= rowCap) { spans.push({ start, len }); rowIdx++; start = i + 1; len = 0; }
+    }
+    spans.push({ start, len });
+    if (targetRow < 0) targetRow = 0;
+    if (targetRow >= spans.length) targetRow = spans.length - 1;
+    const span = spans[targetRow];
+    const colInRow = Math.max(0, desiredCol - (targetRow === 0 ? labelLen : 0));
+    return span.start + Math.min(colInRow, span.len);
+  };
+
+  // Show at most a few rows so a long draft cannot cover the conversation.
+  // The window follows the caret.
+  const windowOf = (laid) => {
+    const max = Math.max(1, Math.min(8, screenRows() - 4));
+    const all = laid.rows;
+    if (all.length <= max) {
+      return { rows: all, start: 0, curRow: laid.curRow, curCol: laid.curCol };
+    }
+    let start = laid.curRow - max + 1;
+    if (start < 0) start = 0;
+    if (start > all.length - max) start = all.length - max;
+    return {
+      rows: all.slice(start, start + max),
+      start,
+      curRow: laid.curRow - start,
+      curCol: laid.curCol,
+    };
+  };
+
+  // Reserve `box` rows at the bottom. Growth scrolls the transcript up so the
+  // new row does not cover it. Shrink only clears rows the box itself occupied.
+  const applyRegion = (box, { fromResize = false } = {}) => {
+    const r = screenRows();
+    const bottom = Math.max(1, r - box);
+    const prevBottom = state.scrollBottom;
+    const prevTop = state.boxTop;
+    if (!fromResize && prevBottom && bottom < prevBottom) {
+      out.write(`\x1b[${prevBottom};1H` + "\r\n".repeat(prevBottom - bottom));
+    }
+    if (prevBottom !== bottom) out.write(`\x1b[1;${bottom}r`);
+    const top = r - box + 1;
+    if (!fromResize && prevTop && top > prevTop) {
+      const last = Math.min(top - 1, bottom);
+      for (let row = prevTop; row <= last; row++) out.write(`\x1b[${row};1H\x1b[2K`);
+    }
+    state.scrollBottom = bottom;
+    state.boxTop = top;
+    return { bottom, top };
+  };
+
+  // mode: "input" puts the caret in the box, "park" leaves it in the
+  // transcript region, "keep" restores whatever the terminal had (resize
+  // while a reply is streaming).
+  const paint = (mode, opts = {}) => {
+    if (state.closed) return;
+    const laid = layout();
+    const view = windowOf(laid);
+    const box = view.rows.length + 2;
+    if (mode === "keep") out.write("\x1b7");
+    // A narrower window reflows the box we painted last: each old rule wraps
+    // into a full row plus a remainder and pushes up into the conversation
+    // (the "staircase" of rules after a drag-resize). Those fragments are the
+    // bottom rows of the screen, so clear exactly as many as they now take.
+    if (opts.fromResize && state.paintedLens.length) {
+      const cols = Math.max(1, out.columns || 80);
+      const frag = state.paintedLens.reduce((n, len) => n + Math.max(1, Math.ceil(len / cols)), 0);
+      if (frag > state.paintedLens.length) {
+        const r = screenRows();
+        out.write("\x1b[r");
+        for (let row = Math.max(1, r - frag + 1); row <= r; row++) out.write(`\x1b[${row};1H\x1b[2K`);
+        state.scrollBottom = 0;
+        state.boxTop = 0;
+      }
+    }
+    const { top } = applyRegion(box, opts);
+    out.write("\x1b[?25l\x1b[?7l");
+    const put = (row, text) => {
+      if (row >= 1) out.write(`\x1b[${row};1H\x1b[2K${text}`);
+    };
+    put(top, rule());
     const label = promptLabel();
-    const labelLen = visLen(label) + 1;       // visible width of "❯ model "
-    // Pastes/inputs above this size COLLAPSE to a one-line summary chip so the
-    // box stays compact. The full text is still kept in `buf` and submitted; the
-    // caret moves over the chip's visible characters so Left/Right still work.
-    const COLLAPSE_CHARS = 1800;
-    const isCollapsed = () => buf.length > COLLAPSE_CHARS;
-    const summaryText = () => {
-      const nl = (buf.match(/\n/g) || []).length + 1;
-      return `[pasted ${buf.length.toLocaleString()} chars · ${nl} lines · Enter to send]`;
-    };
-    // In collapsed mode the caret position maps to a column over the summary
-    // chip: pos 0 -> chip start, pos buf.length -> chip end (clamped between).
-    const collapsedCol = () => {
-      const s = summaryText();
-      return labelLen + (pos <= 0 ? 0 : pos >= buf.length ? s.length : Math.round((pos / buf.length) * s.length));
-    };
+    view.rows.forEach((segment, i) => {
+      const prefix = view.start + i === 0 ? `${label} ` : "";
+      put(top + 1 + i, prefix + segment);
+    });
+    put(top + box - 1, rule());
+    out.write("\x1b[?7h");
+    // Visible width of every box row, for the resize cleanup above.
+    const ruleLen = Math.max(1, termWidth() - 1);
+    state.paintedLens = [ruleLen, ...view.rows.map((seg, i) => visLen((view.start + i === 0 ? `${visLen(label) ? label : ""} ` : "") + seg)), ruleLen];
+    if (mode === "input") {
+      const caretRow = top + 1 + view.curRow;
+      out.write(`\x1b[${Math.max(1, caretRow)};1H`);
+      const col = Math.max(0, Math.min(view.curCol, termWidth() - 2));
+      if (col > 0) out.write(`\x1b[${col}C`);
+      out.write("\x1b[?25h");
+    } else if (mode === "park") {
+      out.write(`\x1b[${Math.max(1, screenRows() - box)};1H\x1b[?25h`);
+    } else {
+      out.write("\x1b8\x1b[?25h");
+    }
+  };
 
-    // Wrap the buffer (which may contain \n) into display rows that fit the box
-    // interior. When collapsed, return a single summary-chip row. The first row
-    // is indented past the label. Returns { rows, curRow, curCol }.
-    const layout = () => {
-      const width = termWidth();
-      const inner = Math.max(8, width - labelLen); // usable cols on row 0
-      if (isCollapsed()) {
-        const chip = color("chrome", summaryText());
-        return { rows: [chip], curRow: 0, curCol: collapsedCol() };
-      }
-      // Build wrapped rows tracking where `pos` lands for the cursor.
-      const rows = [];
-      let cur = "";
-      let curRow = 0, curCol = labelLen, seen = 0;
-      const pushCol = (i) => { if (i === pos) { curRow = rows.length; curCol = (rows.length === 0 ? labelLen : 0) + cur.length; } };
-      for (let i = 0; i < buf.length; i++) {
-        pushCol(i);
-        const ch = buf[i];
-        const rowCap = rows.length === 0 ? inner : width;
-        if (ch === "\n") { rows.push(cur); cur = ""; continue; }
-        cur += ch;
-        if (cur.length >= rowCap) { rows.push(cur); cur = ""; }
-      }
-      pushCol(buf.length);
-      rows.push(cur);
-      if (rows.length === 0) rows.push("");
-      return { rows, curRow, curCol };
-    };
+  const render = () => paint("input");
 
-    // Map a visual (row, desiredCol) back to a buffer index — for Up/Down within
-    // multi-row input. Walks the buffer recording each row's [start,end) span the
-    // same way layout() wraps, then clamps desiredCol into the target row.
-    const posAtRow = (targetRow, desiredCol) => {
-      const width = termWidth();
-      const inner = Math.max(8, width - labelLen);
-      const spans = [];                 // [{start, len}] per visual row
-      let start = 0, len = 0, rowIdx = 0;
-      for (let i = 0; i < buf.length; i++) {
-        const ch = buf[i];
-        const rowCap = rowIdx === 0 ? inner : width;
-        if (ch === "\n") { spans.push({ start, len }); rowIdx++; start = i + 1; len = 0; continue; }
-        len++;
-        if (len >= rowCap) { spans.push({ start, len }); rowIdx++; start = i + 1; len = 0; }
-      }
-      spans.push({ start, len });
-      if (targetRow < 0) targetRow = 0;
-      if (targetRow >= spans.length) targetRow = spans.length - 1;
-      const span = spans[targetRow];
-      // desiredCol is a screen column; row 0 is offset by the label.
-      const colInRow = Math.max(0, desiredCol - (targetRow === 0 ? labelLen : 0));
-      return span.start + Math.min(colInRow, span.len);
-    };
+  const onResize = () => {
+    if (state.resizeTimer) clearTimeout(state.resizeTimer);
+    state.resizeTimer = setTimeout(() => {
+      state.resizeTimer = null;
+      if (!state.closed) paint(state.listening ? "input" : "keep", { fromResize: true });
+    }, 30);
+    if (state.resizeTimer.unref) state.resizeTimer.unref();
+  };
+  out.on("resize", onResize);
 
-    // Remember where the visible cursor sits after a paint so cursor-only moves
-    // can reposition relative to it (no destructive repaint — that made the
-    // caret look "stuck" in some terminals, e.g. VS Code's).
-    let lastRow = 0, lastCol = labelLen, lastRows = 1;
+  const close = () => {
+    if (state.closed) return;
+    state.closed = true;
+    state.listening = false;
+    if (state.resizeTimer) clearTimeout(state.resizeTimer);
+    out.removeListener("resize", onResize);
+    if (state.onKey) stdin.removeListener("keypress", state.onKey);
+    if (stdin.isRaw) stdin.setRawMode(false);
+    out.write("\x1b[0m\x1b[r\x1b[?7h\x1b[?25h\x1b[?2004l");
+    try { out.write(`\x1b[${screenRows()};1H\r\n`); } catch { /* process is exiting */ }
+  };
+  process.once("exit", close);
 
-    // Position the caret on (row, col) of the box using only widely-supported
-    // moves: carriage-return to column 0, then forward by N. Absolute-column
-    // (\x1b[NG) proved unreliable in some terminals (VS Code), leaving the
-    // visible caret stuck even though the logical position was right.
-    const placeCaret = (curRow, curCol) => {
-      out.write("\r");                               // -> column 0 (always honored)
-      if (curCol > 0) out.write(`\x1b[${curCol}C`);  // forward to the target column
-    };
+  // Push the banner up, then cover the bottom rows with the window.
+  out.write("\r\n".repeat(3));
+  paint("park");
 
-    const render = () => {
-      const { rows, curRow, curCol } = layout();
-      out.write("\x1b[?25l");                       // hide cursor
-      if (prevLines > 0) out.write(`\x1b[${prevLines}A`); // back to box top
-      out.write("\r\x1b[0J");                        // col 0 + clear from here down
-      out.write(rule() + "\n");                     // top rule
-      rows.forEach((r, i) => {
-        out.write((i === 0 ? label + " " : "") + r + "\n");
-      });
-      out.write(rule());                            // bottom rule (no newline)
-      prevLines = rows.length + 2;                  // rules + content rows
-      // Cursor is on the bottom rule; go up onto the target content row.
-      const upFromBottom = rows.length - curRow;
-      out.write(`\x1b[${upFromBottom}A`);
-      placeCaret(curRow, curCol);
-      out.write("\x1b[?25h");                        // show cursor
-      lastRow = curRow; lastCol = curCol; lastRows = rows.length;
-    };
-
-    // Reposition the visible caret to the current `pos` WITHOUT repainting the
-    // box. Used for arrow/Home/End/word motion so the cursor visibly moves.
-    const moveCaret = () => {
-      const { rows, curRow, curCol } = layout();
-      if (rows.length !== lastRows) return render(); // layout changed -> full paint
-      const dRow = curRow - lastRow;
-      if (dRow < 0) out.write(`\x1b[${-dRow}A`);
-      else if (dRow > 0) out.write(`\x1b[${dRow}B`);
-      placeCaret(curRow, curCol);
-      lastRow = curRow; lastCol = curCol;
-    };
+  const read = () => new Promise((resolve) => {
+    state.buf = "";
+    state.pos = 0;
+    state.hist = -1;
+    state.stash = "";
+    state.pasting = false;
+    state.listening = true;
 
     const finish = (result) => {
       stdin.removeListener("keypress", onKey);
+      state.listening = false;
       if (stdin.isRaw) stdin.setRawMode(false);
-      out.write("\x1b[?2004l");                      // disable bracketed paste
+      out.write("\x1b[?2004l");
       stdin.pause();
-      // Cursor is somewhere inside the box; move it onto the bottom rule, then
-      // a newline, so following output starts on a clean line below the box.
-      const { rows, curRow } = layout();
-      out.write(`\x1b[${rows.length - curRow}B\n`);  // rows after curRow + bottom rule
+      const submitted = String(result.line || "");
+      state.buf = "";
+      state.pos = 0;
+      state.hist = -1;
+      paint("park");
+      if (!result.eof && submitted.trim()) {
+        const body = submitted.replace(/\r\n/g, "\n").replace(/\r/g, "").replace(/\n/g, "\r\n");
+        out.write(`${color("accent", "❯")} ${body}\r\n`);
+      }
       resolve(result);
     };
 
-    const insert = (s) => { buf = buf.slice(0, pos) + s + buf.slice(pos); pos += s.length; };
-
-    // Word-boundary helpers for word-wise motion/deletion. A "word" is a run of
-    // non-whitespace; we skip trailing whitespace first (shell/readline style).
+    const insert = (s) => {
+      state.buf = state.buf.slice(0, state.pos) + s + state.buf.slice(state.pos);
+      state.pos += s.length;
+    };
     const prevWord = (i) => {
       let j = i;
-      while (j > 0 && /\s/.test(buf[j - 1])) j--;
-      while (j > 0 && !/\s/.test(buf[j - 1])) j--;
+      while (j > 0 && /\s/.test(state.buf[j - 1])) j--;
+      while (j > 0 && !/\s/.test(state.buf[j - 1])) j--;
       return j;
     };
     const nextWord = (i) => {
       let j = i;
-      while (j < buf.length && /\s/.test(buf[j])) j++;
-      while (j < buf.length && !/\s/.test(buf[j])) j++;
+      while (j < state.buf.length && /\s/.test(state.buf[j])) j++;
+      while (j < state.buf.length && !/\s/.test(state.buf[j])) j++;
       return j;
     };
-    const deleteRange = (a, b) => { // remove [a,b), put cursor at a
-      buf = buf.slice(0, a) + buf.slice(b); pos = a;
+    const deleteRange = (a, b) => {
+      state.buf = state.buf.slice(0, a) + state.buf.slice(b);
+      state.pos = a;
     };
 
     function onKey(str, key) {
-      if (!key) return;
+      if (!key || state.closed) return;
       const k = key.name;
-      // Bracketed paste: terminal sends ESC[200~ … ESC[201~ around pasted text.
-      // Inside a paste, treat everything (including newlines) as literal content
-      // so a pasted snippet with line breaks doesn't submit early.
-      if (key.code === "[200~" || str === "\x1b[200~") { pasting = true; return; }
-      if (key.code === "[201~" || str === "\x1b[201~") { pasting = false; return render(); }
-      if (pasting) {
+      if (key.code === "[200~" || str === "\x1b[200~") { state.pasting = true; return; }
+      if (key.code === "[201~" || str === "\x1b[201~") { state.pasting = false; return render(); }
+      if (state.pasting) {
         if (k === "return" || k === "enter") { insert("\n"); return; }
-        if (str) { insert(str); }
-        return; // defer render to the 201~ terminator (one repaint per paste)
+        if (str) insert(str);
+        return;
       }
 
       if (key.ctrl && k === "c") {
-        if (buf === "") return finish({ line: "", eof: true, sigint: true });
-        buf = ""; pos = 0; hist = -1; return render();
+        if (state.buf === "") return finish({ line: "", eof: true, sigint: true });
+        state.buf = ""; state.pos = 0; state.hist = -1; return render();
       }
       if (key.ctrl && k === "d") {
-        if (buf === "") return finish({ line: "", eof: true });
-        // Ctrl-D with text: forward-delete one char (readline convention).
-        if (pos < buf.length) deleteRange(pos, pos + 1);
+        if (state.buf === "") return finish({ line: "", eof: true });
+        if (state.pos < state.buf.length) deleteRange(state.pos, state.pos + 1);
         return render();
       }
-      if (k === "return" || k === "enter") return finish({ line: buf, eof: false });
+      if (k === "return" || k === "enter") return finish({ line: state.buf, eof: false });
 
-      // ── Deletion ──────────────────────────────────────────────────────────
-      // Quick-delete the collapsed paste chip: any delete key removes the WHOLE
-      // chip at once (deleting one char of a hidden blob would look like nothing
-      // happened). Treats the [pasted …] chip as a single atomic unit.
       const DELETE_KEYS = ["backspace", "delete"];
       const isDeleteCombo = DELETE_KEYS.includes(k) ||
         (key.ctrl && (k === "w" || k === "u" || k === "k")) || (key.meta && k === "d");
-      if (isCollapsed() && isDeleteCombo) { buf = ""; pos = 0; hist = -1; return render(); }
+      if (isCollapsed() && isDeleteCombo) {
+        state.buf = ""; state.pos = 0; state.hist = -1; return render();
+      }
 
       if (k === "backspace") {
-        // Alt/Option-Backspace -> delete the word before the cursor.
-        if (key.meta) { if (pos > 0) deleteRange(prevWord(pos), pos); return render(); }
-        if (pos > 0) deleteRange(pos - 1, pos);
+        if (key.meta) { if (state.pos > 0) deleteRange(prevWord(state.pos), state.pos); return render(); }
+        if (state.pos > 0) deleteRange(state.pos - 1, state.pos);
         return render();
       }
-      if (k === "delete") { if (pos < buf.length) deleteRange(pos, pos + 1); return render(); }
-      if (key.ctrl && k === "w") { if (pos > 0) deleteRange(prevWord(pos), pos); return render(); } // delete word back
-      if (key.meta && (k === "d")) { if (pos < buf.length) deleteRange(pos, nextWord(pos)); return render(); } // delete word fwd
-      if (key.ctrl && k === "u") { if (pos > 0) deleteRange(0, pos); return render(); }           // delete to line start
-      if (key.ctrl && k === "k") { if (pos < buf.length) deleteRange(pos, buf.length); return render(); } // delete to line end
+      if (k === "delete") { if (state.pos < state.buf.length) deleteRange(state.pos, state.pos + 1); return render(); }
+      if (key.ctrl && k === "w") { if (state.pos > 0) deleteRange(prevWord(state.pos), state.pos); return render(); }
+      if (key.meta && k === "d") { if (state.pos < state.buf.length) deleteRange(state.pos, nextWord(state.pos)); return render(); }
+      if (key.ctrl && k === "u") { if (state.pos > 0) deleteRange(0, state.pos); return render(); }
+      if (key.ctrl && k === "k") { if (state.pos < state.buf.length) deleteRange(state.pos, state.buf.length); return render(); }
 
-      // Collapsed (chip) mode: a single char step is invisible on the summary,
-      // so Left/Right snap the caret to the chip's start/end — the two useful
-      // spots (insert before vs. after the paste).
       if (isCollapsed() && (k === "left" || k === "right")) {
-        pos = k === "left" ? 0 : buf.length; return moveCaret();
+        state.pos = k === "left" ? 0 : state.buf.length;
+        return render();
       }
-
-      // Cursor-only motion: reposition the caret WITHOUT repainting the box
-      // (a full repaint per arrow press left the caret looking stuck).
-      if (k === "left") { pos = key.meta ? prevWord(pos) : Math.max(0, pos - 1); return moveCaret(); }
-      if (k === "right") { pos = key.meta ? nextWord(pos) : Math.min(buf.length, pos + 1); return moveCaret(); }
-      if (k === "home" || (key.ctrl && k === "a")) { pos = 0; return moveCaret(); }
-      if (k === "end" || (key.ctrl && k === "e")) { pos = buf.length; return moveCaret(); }
+      if (k === "left") { state.pos = key.meta ? prevWord(state.pos) : Math.max(0, state.pos - 1); return render(); }
+      if (k === "right") { state.pos = key.meta ? nextWord(state.pos) : Math.min(state.buf.length, state.pos + 1); return render(); }
+      if (k === "home" || (key.ctrl && k === "a")) { state.pos = 0; return render(); }
+      if (k === "end" || (key.ctrl && k === "e")) { state.pos = state.buf.length; return render(); }
       if (k === "up") {
-        // Multi-row input: move the caret up a visual row. On the top row (or
-        // single-row input), fall back to recalling previous history.
         const { rows, curRow, curCol } = layout();
-        if (rows.length > 1 && curRow > 0) { pos = posAtRow(curRow - 1, curCol); return moveCaret(); }
+        if (rows.length > 1 && curRow > 0) { state.pos = posAtRow(curRow - 1, curCol); return render(); }
         if (history.length === 0) return;
-        if (hist === -1) { stash = buf; hist = history.length; }
-        if (hist > 0) hist--;
-        buf = history[hist]; pos = buf.length; return render();
+        if (state.hist === -1) { state.stash = state.buf; state.hist = history.length; }
+        if (state.hist > 0) state.hist--;
+        state.buf = history[state.hist]; state.pos = state.buf.length; return render();
       }
       if (k === "down") {
         const { rows, curRow, curCol } = layout();
-        if (rows.length > 1 && curRow < rows.length - 1) { pos = posAtRow(curRow + 1, curCol); return moveCaret(); }
-        if (hist === -1) return;
-        if (hist < history.length - 1) { hist++; buf = history[hist]; }
-        else { hist = -1; buf = stash; }
-        pos = buf.length; return render();
+        if (rows.length > 1 && curRow < rows.length - 1) { state.pos = posAtRow(curRow + 1, curCol); return render(); }
+        if (state.hist === -1) return;
+        if (state.hist < history.length - 1) { state.hist++; state.buf = history[state.hist]; }
+        else { state.hist = -1; state.buf = state.stash; }
+        state.pos = state.buf.length; return render();
       }
-      // Printable input (ignore other escape/control sequences).
       if (str && !key.ctrl && !key.meta && str >= " ") { insert(str); return render(); }
     }
 
+    state.onKey = onKey;
     emitKeypressEvents(stdin);
     if (stdin.isRaw !== true) stdin.setRawMode(true);
     stdin.resume();
-    out.write("\x1b[?2004h");                        // enable bracketed paste
+    out.write("\x1b[?2004h");
     stdin.on("keypress", onKey);
     render();
   });
+
+  return { read, close };
 }
 
 function resolvePath(p) {
@@ -445,15 +513,21 @@ function version() {
 
 const ANALYSIS_SYSTEM =
   "You are a senior software engineer doing code and architecture ANALYSIS. " +
-  "Be precise and actionable. You are NOT editing files — another tool (Claude Code) " +
+  "Be precise and actionable. You are NOT editing files — `vktech code` (the RTX Ollama agent) " +
   "will implement changes. Point out bugs, risks, and concrete recommendations.";
+
+// Cloud providers in the REPL have no tool loop. The local provider does.
+const REPL_CLOUD_SYSTEM =
+  "You are vktech's assistant, continuing an existing conversation. " +
+  "Be precise. This turn has no tools: you cannot edit files, browse, or inspect the RTX from here. " +
+  "If the user needs that, tell them to run /providers local.";
 
 function help() {
   console.log(`
-${color("bold", "vktech")} v${version()} — analyze with OpenAI / Gemini / xAI, implement with Claude Code
+${color("bold", "vktech")} v${version()} — analyze with several models, implement with the RTX Ollama agent
 
 ${color("bold", "USAGE")}
-  vktech                              Start interactive REPL
+  vktech                              Start the RTX agent REPL (edits, browses, remembers)
   vktech ask --model <m> "<prompt>"  One-shot analysis with a provider
   vktech ask -i <img> "<prompt>"     Vision analysis (self-hosted by default; $0 API)
   vktech audit [template] [-d dir]   Run a saved audit template over a project
@@ -467,8 +541,10 @@ ${color("bold", "USAGE")}
   vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech secrets [-d dir] [--history] Scan working tree (+git history) for leaked secrets
   vktech search "<query>"            Web search (self-hosted SearXNG) answered by local Ollama; --raw, --native
+  vktech replies                     Mail status for this repo's tracked threads (same as "check replies")
   vktech industries                  Show detectable industries + frameworks
-  vktech code "<prompt>"             Hand off to Claude Code to implement
+  vktech code "<prompt>"             Implement with the RTX Ollama agent (default ${displayModel("local")})
+  vktech code --claude "<prompt>"    Hand the same prompt to Claude Code instead
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
   vktech sh                          Paste a shell snippet → run with bash
   vktech remote --host <h>           Paste a snippet → run on a host over SSH
@@ -476,12 +552,13 @@ ${color("bold", "USAGE")}
   vktech --help                      This help
   vktech --version
 
-${color("bold", "MODELS")} (for --model / -m — default priority: grok › claude › openai)
-  ${color("cyan", "grok, xai")}       -> xAI         (${DEFAULTS.xai})        [default]
-  ${color("cyan", "claude")}          -> Anthropic   (${DEFAULTS.anthropic})
-  ${color("cyan", "gpt-5, openai")}   -> OpenAI      (${DEFAULTS.openai})
-  ${color("cyan", "gemini, google")}  -> Gemini      (${DEFAULTS.gemini})
-  You may also pass an explicit id, e.g. --model gpt-4o
+${color("bold", "MODELS")} (for --model / -m — default priority: ${PRIORITY.join(" › ")})
+  ${color("cyan", "local, ollama")}   -> RTX Ollama  (${displayModel("local")})  ${color("dim", "default")}
+  ${color("cyan", "grok, xai")}       -> xAI         (${displayModel("xai")})
+  ${color("cyan", "claude")}          -> Anthropic   (${displayModel("anthropic")})
+  ${color("cyan", "gpt-5, openai")}   -> OpenAI      (${displayModel("openai")})
+  ${color("cyan", "gemini, google")}  -> Gemini      (${displayModel("gemini")})
+  You may also pass an explicit id, e.g. --model gpt-4o or --model qwen3.8:27b
 
 ${color("bold", "AUDIT TEMPLATES")} (vktech audit --list for the full set)
   Preselect a saved prompt + curated file bundle, run it over a project dir.
@@ -496,7 +573,8 @@ ${color("bold", "EXAMPLES")}
   vktech audit hipaa-iso -d ./my-app -o report.md
   vktech transcribe ./videos --srt --combine       # whole folder → .txt + .srt + combined
   vktech transcribe talk.mp4 -m medium.en          # single file, higher-accuracy model
-  vktech code "Implement the fixes Grok suggested in src/order.js"
+  vktech code "Implement the fixes in src/order.js"
+  vktech code --claude "Implement the fixes in src/order.js"
 
 ${color("bold", "PASTE & RUN")} (no shell-quoting; snippet read from stdin/heredoc/-f file)
   ${color("cyan", "vktech run")}                          # paste JS, Ctrl-D to execute
@@ -509,10 +587,14 @@ ${color("bold", "PASTE & RUN")} (no shell-quoting; snippet read from stdin/hered
   ${color("cyan", "vktech remote --host root@1.2.3.4 --lang shell <<'EOF' …")}
 
 ${color("bold", "REPL COMMANDS")}
-  /model <m>     switch active analysis provider
-  /code <text>   hand the text to Claude Code
+  /model <m>     switch active analysis provider (local, ollama, grok, claude, gpt-5, gemini)
+  /code <text>   implement with the RTX Ollama agent (/code --claude … for Claude Code)
   /file <path>   load a file's contents into the next prompt
-  /providers     list providers
+  /providers     list providers and mark the active one
+  /providers <p> switch provider (local, ollama, grok, claude, gpt-5, gemini)
+  /history       list saved conversations for this folder
+  /history <n>   print that conversation and continue it
+  /new           start a fresh conversation
   /help          help        /exit  quit
 
 ${color("bold", "EDITING")} (in the input box)
@@ -529,7 +611,33 @@ ${color("bold", "THEME")}
 `);
 }
 
-function showProviders() {
+// Names the REPL accepts in `/providers <name>` and `/model <name>`.
+const PROVIDER_SWITCHES = "local, ollama, grok, claude, gpt-5, gemini";
+const PROVIDER_SWITCH_ALIAS = {
+  local: "local",
+  anthropic: "claude",
+  xai: "grok",
+  openai: "gpt-5",
+  gemini: "gemini",
+};
+
+// Switch the REPL's active analysis alias. Returns the alias to store, or
+// null after printing the error. Ollama stays the boot default; this only
+// changes the current session.
+function applyActiveProvider(name) {
+  if (name && resolveProvider(name)) {
+    const provider = resolveProvider(name);
+    console.log(color("dim", `Active provider -> ${name} · ${displayModel(provider)}`));
+    if (provider !== "local") {
+      console.log(color("dim", "Text only on this provider. /providers local edits code, browses, and checks the RTX."));
+    }
+    return name;
+  }
+  console.log(color("red", `Unknown provider "${name || ""}". Try ${PROVIDER_SWITCHES}.`));
+  return null;
+}
+
+function showProviders(activeAlias) {
   console.log(color("bold", "\nConfigured providers:\n"));
   // Listed in real PRIORITY order so the first ✓ row is what actually runs by
   // default. `local` is keyless (self-hosted Ollama) — it's gated on the box
@@ -541,17 +649,30 @@ function showProviders() {
     openai:    ["OpenAI",    "OPENAI_API_KEY"],
     gemini:    ["Gemini",    "GEMINI_API_KEY"],
   };
+  const activeProvider = resolveProvider(activeAlias)
+    || PRIORITY.find((p) => providerConfigured(p))
+    || null;
   for (const p of PRIORITY.filter((p) => META[p])) {
     const [name, env] = META[p];
-    const status = !env
-      ? color("green", "✓ keyless")
+    // xAI in grok-CLI mode authenticates through `grok login`, not a key, so
+    // it is keyless here even though KEY_ENV still names XAI_API_KEY.
+    const viaCli = p === "xai" && useGrokCli();
+    const status = (!env || viaCli)
+      ? color("green", viaCli ? "✓ grok CLI" : "✓ keyless")
       : (process.env[env] ? color("green", "✓ key set") : color("red", "✗ no key"));
-    console.log(`  ${name.padEnd(10)} ${status.padEnd(20)} ${color("dim", DEFAULTS[p])}`);
+    const mark = p === activeProvider ? color("accent", "●") : color("dim", "·");
+    const sw = PROVIDER_SWITCH_ALIAS[p] || p;
+    console.log(`  ${mark} ${name.padEnd(10)} ${status.padEnd(20)} ${color("dim", displayModel(p))}  ${color("dim", "/providers " + sw)}`);
   }
-  console.log(color("dim", `\n  default: ${PRIORITY.find((p) => p === "local" || process.env[META[p]?.[1]]) || "none"}`
+  console.log(color("dim", `\n  default: ${PRIORITY.find((p) => providerConfigured(p)) || "none"}`
     + ` · vision: ${VISION_PRIORITY[0] || "none"}${VISION_LOCAL_ONLY ? " (local-only)" : ""}`));
+  console.log(color("dim", `  switch: /providers <${PROVIDER_SWITCHES}>`));
   const claudeBin = process.env.CLAUDE_BIN || "claude";
-  console.log(`\n  ${color("chrome", "Claude Code")} (implementation) via "${claudeBin}"`);
+  const codeAgent = /^(claude|anthropic)$/i.test(process.env.VKTECH_CODE_AGENT || "") ? "claude" : "local";
+  console.log(`\n  ${color("chrome", "Code agent")} ${codeAgent === "local"
+    ? color("green", `RTX Ollama · ${displayModel("local")}`)
+    : color("yellow", "Claude Code")}`);
+  console.log(color("dim", `  ollama ${LOCAL_URL} · ctx joins the loaded runner (else 32768) · --claude uses "${claudeBin}"`));
   console.log(`  ${color("dim", "theme:")} ${color("accent", THEME_NAME)} ${color("dim", "(VKTECH_THEME=violet|coral)")}\n`);
 }
 
@@ -612,7 +733,7 @@ async function doAskVision(model, images, prompt) {
     });
     spin.stop();
     console.log(color("cyan", `\n[${provider}:${usedModel} · vision]\n`));
-    console.log(text + "\n");
+    console.log(renderMarkdown(text) + "\n");
     statusFooter({ provider, model: usedModel, ms: Date.now() - t0, chars: text.length });
   } catch (err) {
     spin.stop();
@@ -640,7 +761,7 @@ async function doAsk(model, prompt) {
     });
     spin.stop();
     console.log(color("cyan", `\n[${provider}:${usedModel}]\n`));
-    console.log(text + "\n");
+    console.log(renderMarkdown(text) + "\n");
     statusFooter({ provider, model: usedModel, ms: Date.now() - t0, chars: text.length });
   } catch (err) {
     spin.stop();
@@ -805,7 +926,7 @@ async function doSearch(argv) {
       return;
     }
     console.log(color("cyan", `\n[${backend} · ${usedModel}]\n`));
-    console.log(answer + "\n");
+    console.log(renderMarkdown(answer) + "\n");
     statusFooter({ provider: "search", model: usedModel, ms: Date.now() - t0, chars: (answer || "").length });
   } catch (err) {
     spin.stop();
@@ -1116,7 +1237,7 @@ async function doAudit(argv) {
     const header = `# vktech audit: ${tpl.title || tpl.name}\n` +
       `Template: ${tpl.name} | Model: ${provider}:${usedModel} | Files: ${files.length} | Dir: ${targetDir}\n\n`;
     console.log(color("cyan", `\n[${provider}:${usedModel}] template=${tpl.name}\n`));
-    console.log(text + "\n");
+    console.log(renderMarkdown(text) + "\n");
     saveReport(header, text);
   } catch (err) {
     console.error(color("red", `\nProvider error: ${err.message}\n`));
@@ -1124,47 +1245,238 @@ async function doAudit(argv) {
   }
 }
 
+// Ctrl-C during a request aborts the in-flight call. The boxed reader has
+// already released stdin, so re-attach a raw keypress watcher plus SIGINT.
+async function withQueryCancel(fn) {
+  const ac = new AbortController();
+  const cancel = () => { if (!ac.signal.aborted) ac.abort(new Error("cancelled")); };
+  const tty = process.stdin.isTTY && process.stdout.isTTY && !NO_COLOR;
+  const onWatchKey = (_str, key) => { if (key && key.ctrl && key.name === "c") cancel(); };
+  if (tty) {
+    emitKeypressEvents(process.stdin);
+    if (process.stdin.isRaw !== true) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("keypress", onWatchKey);
+  }
+  process.once("SIGINT", cancel);
+  try {
+    return await fn(ac.signal);
+  } catch (err) {
+    if (ac.signal.aborted) throw new Error("cancelled");
+    throw err;
+  } finally {
+    process.removeListener("SIGINT", cancel);
+    if (tty) {
+      process.stdin.removeListener("keypress", onWatchKey);
+      if (process.stdin.isRaw) process.stdin.setRawMode(false);
+      process.stdin.pause();
+    }
+  }
+}
+
+// Flags only as a prefix; everything after them is the prompt, spaces included.
+function parseCodeArgs(argv) {
+  let claude = /^(claude|anthropic)$/i.test(process.env.VKTECH_CODE_AGENT || "");
+  let dir = process.cwd();
+  let model = null;
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--claude") { claude = true; i++; continue; }
+    if (a === "--local" || a === "--ollama") { claude = false; i++; continue; }
+    if ((a === "-d" || a === "--dir") && argv[i + 1]) { dir = resolvePath(argv[++i]); i++; continue; }
+    if ((a === "-m" || a === "--model") && argv[i + 1]) {
+      model = argv[++i];
+      i++;
+      if (resolveProvider(model) === "anthropic") claude = true;
+      continue;
+    }
+    break;
+  }
+  return { claude, dir, model, prompt: argv.slice(i).join(" ").trim() };
+}
+
+function ollamaModelId(model) {
+  if (!model || model === "local" || model === "ollama" || model === "self-hosted") return DEFAULTS.local;
+  if (resolveProvider(model) && resolveProvider(model) !== "local") return null;
+  return model;
+}
+
+const CODE_USAGE = 'Usage: vktech code [--claude] [-d dir] [-m <ollama-model>] "<what to implement>"';
+
+async function executeCode(argv, { exitOnEnd = false } = {}) {
+  const parsed = parseCodeArgs(argv);
+  const fail = (message, status = 1) => {
+    console.error(color("red", message));
+    if (exitOnEnd) process.exit(status);
+  };
+  if (!parsed.prompt) return fail(CODE_USAGE);
+  if (parsed.claude) {
+    console.log(color("magenta", "→ Handing off to Claude Code…\n"));
+    const code = await runClaude(parsed.prompt);
+    if (exitOnEnd) process.exit(code);
+    return;
+  }
+  const model = ollamaModelId(parsed.model);
+  if (!model) {
+    return fail(`vktech code runs on RTX Ollama. "${parsed.model}" is not a local model. Use --claude for Claude Code, or -m qwen3.8:27b.`);
+  }
+  const dir = resolvePath(parsed.dir);
+  if (!existsSync(dir)) return fail(`Dir not found: ${dir}`);
+  console.log(color("magenta", `→ RTX Ollama agent (${model})\n`) + color("dim", `  ${dir}\n`));
+  const t0 = Date.now();
+  try {
+    const result = await withQueryCancel((signal) => runLocalAgent({
+      prompt: parsed.prompt,
+      cwd: dir,
+      model,
+      signal,
+      spin: (label) => startSpinner(`${label}  (Ctrl-C to cancel)`),
+      log: (s) => process.stderr.write(color("dim", s.endsWith("\n") ? s : s + "\n")),
+      write: (s) => process.stdout.write(s),
+    }));
+    if (result.files.length) console.log(color("green", `edited ${result.files.join(", ")}\n`));
+    statusFooter({ provider: "local", model: result.model, ms: Date.now() - t0, chars: result.text.length });
+    if (exitOnEnd) process.exit(0);
+  } catch (err) {
+    if (err?.message === "cancelled") {
+      console.log(color("yellow", "\n✗ cancelled\n"));
+      if (exitOnEnd) process.exit(130);
+      return;
+    }
+    fail(`Agent error: ${err.message}`);
+  }
+}
+
+function printTranscript(session, { limit = 0 } = {}) {
+  const all = session.transcript || [];
+  const rows = limit > 0 && all.length > limit ? all.slice(-limit) : all;
+  const skipped = all.length - rows.length;
+  if (skipped > 0) {
+    console.log(color("dim", `… ${skipped} earlier messages. /history prints the full conversation.`));
+  }
+  for (const turn of rows) {
+    const who = turn.role === "user" ? "you" : (session.model || "agent");
+    console.log(color("chrome", `\n${who}`));
+    console.log(turn.role === "user" ? turn.text : renderMarkdown(turn.text));
+  }
+  if (rows.length) console.log("");
+}
+
+function printSessionList(cwd) {
+  const rows = listSessions(cwd);
+  if (!rows.length) {
+    console.log(color("dim", "No saved conversations in this folder."));
+    return rows;
+  }
+  console.log(color("bold", "\nConversations in this folder:\n"));
+  rows.slice(0, 20).forEach((row, i) => {
+    const when = String(row.updated).replace("T", " ").slice(0, 16);
+    console.log(`  ${color("accent", String(i + 1).padStart(2))}  ${color("dim", when)}  ${row.title}`);
+  });
+  console.log(color("dim", "\n  /history <n> prints that conversation and continues it. /new starts fresh.\n"));
+  return rows;
+}
+
 async function repl() {
-  // Boot on the highest-priority configured analysis provider (default: grok).
+  // Boot on the highest-priority configured provider (default: local). The
+  // alias stays valid for xai in grok-CLI mode, where there is no pinned model id.
+  const cwd = realpathSync(process.cwd());
   const _avail = availableProviders();
-  let activeModel = _avail.length ? DEFAULTS[_avail[0]] : null;
+  let activeModel = _avail.length ? _avail[0] : null;
   let pendingFile = "";
+  let session = latestSession(cwd) || createSession(cwd);
   console.log(banner([
-    `${color("heading", "✦ vktech")} ${color("grey", "v" + version())} ${color("chrome", "— interactive analysis")}`,
+    `${color("heading", "✦ vktech")} ${color("grey", "v" + version())} ${color("chrome", "— RTX agent")}`,
     `${color("grey", "Type")} ${color("accent", "/help")} ${color("grey", "for commands,")} ${color("accent", "/exit")} ${color("grey", "to quit.")}`,
   ]));
-  console.log(color("dim", `Active analysis model: `) + color("chrome", activeModel) + "\n");
+  const bootProvider = activeModel ? resolveProvider(activeModel) : null;
+  const bootLabel = bootProvider ? `${activeModel} · ${displayModel(bootProvider)}` : (activeModel || "none");
+  console.log(color("dim", `Active: `) + color("chrome", bootLabel));
+  console.log(color("dim", `Workspace: ${cwd}`));
+  console.log(color("dim", "Plain text edits code, runs commands, searches the web, and checks the RTX."));
+  if ((session.transcript || []).length) {
+    console.log(color("dim", `Resumed "${session.title || "conversation"}" · ${session.transcript.length} messages. Scroll up to read it. /history lists others. /new starts fresh.`));
+    printTranscript(session, { limit: 20 });
+  } else {
+    console.log(color("dim", "New conversation. /history lists older ones.\n"));
+  }
 
-  // Live violet input box drawn by a raw-mode reader: rule above the "❯" caret
-  // line and rule below, both visible while typing (readline can't do this).
+  // Permanent bottom window: rules above and below the caret, redrawn to the
+  // live width. Output scrolls above it. Up/Down recalls earlier lines.
   const promptLabel = () => color("accent", "❯") + color("grey", ` ${activeModel}`);
-  const history = [];
-  const readBoxed = makeBoxedReader({ historyRef: history, promptLabel });
+  const history = loadLineHistory();
+  if (history.length === 0) {
+    for (const turn of session.transcript || []) {
+      if (turn.role === "user" && turn.text) history.push(turn.text);
+    }
+  }
+  const composer = openComposer({ historyRef: history, promptLabel });
 
   const quit = () => {
-    console.log(color("dim", "\nbye 👋"));
+    composer.close();
+    try {
+      if ((session.transcript || []).length) saveSession(session);
+      saveLineHistory(history);
+    } catch { /* the terminal must be restored even if the save fails */ }
+    console.log(color("dim", "bye 👋"));
     process.exit(0);
   };
 
-  // Main loop: read one boxed line, dispatch, repeat.
+  // Main loop: read one line from the pinned window, dispatch, repeat.
   for (;;) {
-    const { line, eof } = await readBoxed();
+    const { line, eof } = await composer.read();
     if (eof) return quit();
     const input = (line || "").trim();
     if (!input) continue;
-    if (input !== history[history.length - 1]) history.push(input);
+    if (input !== history[history.length - 1]) {
+      history.push(input);
+      saveLineHistory(history);
+    }
 
     if (input === "/exit" || input === "/quit") return quit();
     if (input === "/help") { help(); continue; }
-    if (input === "/providers") { showProviders(); continue; }
+    if (input === "/providers" || input.startsWith("/providers ")) {
+      const m = input.split(/\s+/)[1];
+      if (!m) { showProviders(activeModel); continue; }
+      const switched = applyActiveProvider(m);
+      if (switched) activeModel = switched;
+      continue;
+    }
     if (input.startsWith("/model")) {
       const m = input.split(/\s+/)[1];
-      if (m && resolveProvider(m)) {
-        activeModel = m;
-        console.log(color("dim", `Active model -> ${activeModel}`));
-      } else {
-        console.log(color("red", `Unknown model "${m || ""}". Try grok, claude, gpt-5, gemini.`));
+      const switched = applyActiveProvider(m);
+      if (switched) activeModel = switched;
+      continue;
+    }
+    if (input === "/new") {
+      if (!(session.transcript || []).length) {
+        console.log(color("dim", "Already a fresh conversation."));
+        continue;
       }
+      saveSession(session);
+      session = createSession(cwd);
+      console.log(color("dim", "Started a new conversation."));
+      continue;
+    }
+    if (input === "/history" || input.startsWith("/history ")) {
+      const which = input.split(/\s+/)[1];
+      if (!which) { printSessionList(cwd); continue; }
+      const rows = listSessions(cwd);
+      const picked = rows[Number(which) - 1];
+      if (!picked) {
+        console.log(color("red", `No conversation ${which}. /history lists them.`));
+        continue;
+      }
+      const loaded = loadSession(picked.id);
+      if (!loaded) {
+        console.log(color("red", "That conversation could not be read."));
+        continue;
+      }
+      saveSession(session);
+      session = loaded;
+      console.log(color("dim", `Continuing "${session.title || "conversation"}". Scroll to read it.`));
+      printTranscript(session);
       continue;
     }
     if (input.startsWith("/file")) {
@@ -1179,60 +1491,133 @@ async function repl() {
     }
     if (input.startsWith("/code")) {
       const text = input.slice(5).trim();
-      if (!text) {
-        console.log(color("red", "Usage: /code <what Claude should implement>"));
-        continue;
-      }
-      console.log(color("magenta", "\n→ Handing off to Claude Code…\n"));
+      await executeCode(text ? text.split(/\s+/) : []);
+      continue;
+    }
+    if (isReplyCheck(input)) {
+      appendTranscript(session, "user", input);
+      saveSession(session);
+      console.log(color("dim", "\nChecking this repo's tracked mail…"));
       try {
-        await runClaude(text);
+        const text = await checkReplies({ cwd, focus: replyFocus(input) });
+        console.log(`\n${text}\n`);
+        appendTranscript(session, "assistant", text);
       } catch (err) {
-        console.error(color("red", err.message));
+        console.error(color("red", `Reply check failed: ${err.message}`));
+        appendTranscript(session, "assistant", `(error: ${err.message})`);
       }
+      saveSession(session);
       continue;
     }
 
-    // Plain text -> analysis with active provider. Ctrl-C during the request
-    // aborts the in-flight fetch. We can't rely on OS SIGINT (stdin spends the
-    // request paused/raw), so we keep a minimal raw keypress watcher on stdin
-    // that aborts the AbortController on Ctrl-C, plus a SIGINT fallback.
+    // Plain text. On local this is the RTX agent (tools + this conversation).
+    // Ctrl-C aborts the in-flight call. The boxed reader has released stdin,
+    // so withQueryCancel watches for Ctrl-C itself.
     const fullPrompt = pendingFile ? `${pendingFile}\n\n---\n\n${input}` : input;
     pendingFile = "";
-    const spin = startSpinner(`querying ${activeModel}… (Ctrl-C to cancel)`);
+    appendTranscript(session, "user", fullPrompt);
+    // The question is on disk before the model runs, so a quit during the
+    // first call still resumes this turn.
+    saveSession(session);
     const t0 = Date.now();
-    const ac = new AbortController();
-    const cancel = () => { if (!ac.signal.aborted) ac.abort(new Error("cancelled")); };
-    const tty = process.stdin.isTTY && process.stdout.isTTY && !NO_COLOR;
-    const onWatchKey = (str, key) => { if (key && key.ctrl && key.name === "c") cancel(); };
-    if (tty) {
-      emitKeypressEvents(process.stdin);
-      if (process.stdin.isRaw !== true) process.stdin.setRawMode(true);
-      process.stdin.resume();
-      process.stdin.on("keypress", onWatchKey);
-    }
-    process.once("SIGINT", cancel);
+    const localTurn = resolveProvider(activeModel) === "local";
+    let liveText = "";
+    const checkpoint = ({ phase, text, label, result, error }) => {
+      if (phase === "assistant" && text) {
+        liveText = text;
+        upsertLiveTranscript(session, liveText, false);
+      } else if (phase === "tool") {
+        const line = `→ ${label}\n  ${toolResultPreview(result)}`;
+        liveText = liveText ? `${liveText}\n${line}` : line;
+        upsertLiveTranscript(session, liveText, false);
+      } else if (phase === "done") {
+        const body = String(text || liveText || "").trim();
+        if (body) upsertLiveTranscript(session, body, true);
+      } else if (phase === "cancel") {
+        const note = error || "(cancelled)";
+        liveText = liveText ? `${liveText}\n${note}` : note;
+        upsertLiveTranscript(session, liveText, true);
+      }
+      saveSession(session);
+    };
     try {
-      const { provider, model, text } = await ask({
-        modelArg: activeModel,
-        prompt: fullPrompt,
-        system: ANALYSIS_SYSTEM,
-        signal: ac.signal,
-      });
-      spin.stop();
-      console.log(color("cyan", `\n[${provider}:${model}]\n`));
-      console.log(text + "\n");
-      statusFooter({ provider, model, ms: Date.now() - t0, chars: text.length });
+      if (localTurn) {
+        const model = ollamaModelId(activeModel) || DEFAULTS.local;
+        session.model = model;
+        session.messages ||= [];
+        console.log(color("cyan", `\n[local:${model}]\n`));
+        const result = await withQueryCancel((signal) => runLocalAgent({
+          prompt: fullPrompt,
+          cwd,
+          model,
+          messages: session.messages,
+          signal,
+          onTrace: checkpoint,
+          spin: (label) => startSpinner(`${label}  (Ctrl-C to cancel)`),
+          log: (s) => process.stderr.write(color("dim", s.endsWith("\n") ? s : s + "\n")),
+          write: (s) => process.stdout.write(s),
+        }));
+        session.messages = result.messages;
+        if (result.files.length) console.log(color("green", `edited ${result.files.join(", ")}\n`));
+        statusFooter({ provider: "local", model: result.model, ms: Date.now() - t0, chars: result.text.length });
+      } else {
+        const prior = (session.transcript || []).slice(0, -1).slice(-12)
+          .map((turn) => `${turn.role}: ${String(turn.text).slice(0, 4000)}`)
+          .join("\n\n");
+        let memoryNote = "";
+        try {
+          const found = memoriesForPrompt(fullPrompt, cwd);
+          memoryNote = found.text;
+          if (found.terms.length) {
+            const notes = found.count ? `${found.count} note${found.count === 1 ? "" : "s"}` : "none";
+            console.log(color("dim", `→ memory ${found.terms.join(", ")} · ${notes}`));
+          }
+        } catch (err) {
+          console.log(color("dim", `→ memory lookup failed (${err.message})`));
+        }
+        const asked = memoryNote
+          ? `${memoryNote}\n\nUser request:\n${fullPrompt}`
+          : fullPrompt;
+        const prompt = prior ? `Conversation so far:\n${prior}\n\n${asked}` : asked;
+        const spin = startSpinner(`querying ${activeModel}… (Ctrl-C to cancel)`);
+        try {
+          const { provider, model, text } = await withQueryCancel((signal) => ask({
+            modelArg: activeModel,
+            prompt,
+            system: `${REPL_CLOUD_SYSTEM}\n\n${memoryBrief(cwd)}`,
+            signal,
+          }));
+          spin.stop();
+          console.log(color("cyan", `\n[${provider}:${model}]\n`));
+          console.log(renderMarkdown(text) + "\n");
+          appendTranscript(session, "assistant", text);
+          session.messages ||= [];
+          session.messages.push({ role: "user", content: fullPrompt });
+          session.messages.push({ role: "assistant", content: text });
+          statusFooter({ provider, model, ms: Date.now() - t0, chars: text.length });
+        } catch (err) {
+          spin.stop();
+          throw err;
+        }
+      }
     } catch (err) {
-      spin.stop();
-      if (ac.signal.aborted) console.log(color("yellow", "\n✗ cancelled\n"));
+      const note = err?.message === "cancelled" ? "(cancelled)" : `(error: ${err.message})`;
+      const msgs = session.messages || [];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "user" && last.content === fullPrompt) {
+        msgs.push({ role: "assistant", content: note });
+        if (!localTurn) appendTranscript(session, "assistant", note);
+      }
+      if (localTurn) {
+        // The agent checkpoint already wrote the in-progress row when it had one.
+        const row = session.transcript?.[session.transcript.length - 1];
+        const saved = row?.role === "assistant" && String(row.text || "").includes(note);
+        if (!saved) appendTranscript(session, "assistant", note);
+      }
+      if (err?.message === "cancelled") console.log(color("yellow", "\n✗ cancelled\n"));
       else console.error(color("red", `Provider error: ${err.message}`));
     } finally {
-      process.removeListener("SIGINT", cancel);
-      if (tty) {
-        process.stdin.removeListener("keypress", onWatchKey);
-        if (process.stdin.isRaw) process.stdin.setRawMode(false);
-        process.stdin.pause();
-      }
+      saveSession(session);
     }
   }
 }
@@ -1268,6 +1653,11 @@ async function main() {
   if (cmd === "transcribe") return doTranscribe(argv.slice(1));
   if (cmd === "secrets" || cmd === "secret-audit") return runSecrets(argv.slice(1), { color, heading: (t) => color("heading", t) });
   if (cmd === "search" || cmd === "web") return doSearch(argv.slice(1));
+  if (cmd === "replies") {
+    const text = await checkReplies({ cwd: realpathSync(process.cwd()), focus: argv.slice(1).join(" ") });
+    console.log(`\n${text}\n`);
+    return;
+  }
 
   if (cmd === "ask") {
     const { model, images, rest } = extractModel(argv.slice(1));
@@ -1275,16 +1665,7 @@ async function main() {
     return doAsk(model, rest.join(" "));
   }
 
-  if (cmd === "code") {
-    const text = argv.slice(1).join(" ");
-    if (!text) {
-      console.error(color("red", "Usage: vktech code \"<what to implement>\""));
-      process.exit(1);
-    }
-    console.log(color("magenta", "→ Handing off to Claude Code…\n"));
-    const code = await runClaude(text);
-    process.exit(code);
-  }
+  if (cmd === "code") return executeCode(argv.slice(1), { exitOnEnd: true });
 
   // No recognized command -> REPL (also handles bare `vktech`).
   if (!cmd) return repl();
