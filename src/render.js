@@ -159,3 +159,82 @@ export function createMarkdownStream(write, { color = colorEnabled() } = {}) {
     },
   };
 }
+
+// ── "check replies" report ──────────────────────────────────────────────────
+// src/replies.js builds a plain-text report (it is saved to the session and
+// piped as-is). This paints it in the same theme as a model reply: the title
+// and section names as headings, the field labels grey, and the Status line
+// with the reply-status mark: ! waiting on us, ✓ waiting on them, ✗ not checked.
+export function isRepliesReport(text) {
+  return /^Replies(?: · [^\n]+)?\n/.test(String(text ?? ""));
+}
+
+const REPLY_FIELD = /^(\s{2})(Watching|Parties|Status|Last note|Mail|Channel)(\s+)(.*)$/;
+const REPLY_HEAD = /^(Memory|Mail)(\s+)(.*)$/;
+
+function replyStatus(value) {
+  if (/not checked|not fetched|did not answer|timed out/i.test(value)) return "red";
+  if (/waiting on us/i.test(value)) return "yellow";
+  if (/waiting on them/i.test(value)) return "green";
+  return null;
+}
+
+export function renderReplies(text, { color = colorEnabled() } = {}) {
+  const body = String(text ?? "");
+  if (!color) return body;
+  const lines = body.split("\n");
+  return lines.map((line, i) => {
+    if (i === 0) return `${BOLD}${C.accent}${line}${FG_OFF}${BOLD_OFF}`;
+    if (/^\s*$/.test(line)) return line;
+    const head = line.match(REPLY_HEAD);
+    if (head && i <= 3) {
+      const tone = head[1] === "Mail" ? replyStatus(head[3]) : null;
+      const value = tone === "red" ? fg("red", head[3]) : fg("chrome", head[3]);
+      return `${fg("grey", head[1])}${head[2]}${value}`;
+    }
+    // A group heading ("Payment processing") sits at column 0.
+    if (!/^\s/.test(line)) {
+      if (i <= 4 && /Claude memory|Other projects/.test(line)) return fg("grey", line);
+      if (/^No /.test(line)) return fg("yellow", line);
+      return `${BOLD}${C.heading}${line}${FG_OFF}${BOLD_OFF}`;
+    }
+    const field = line.match(REPLY_FIELD);
+    if (field) {
+      const [, pad, label, gap, value] = field;
+      if (label === "Status" || label === "Mail" || label === "Channel") {
+        const tone = replyStatus(value) || (label === "Mail" ? null : "yellow");
+        const mark = tone ? fg(tone, MARKS[tone]) : fg("grey", "•");
+        const shown = tone ? fg(tone, value) : fg("grey", value);
+        return `${pad}${mark} ${fg("grey", label)}${gap.slice(2) || " "}${shown}`;
+      }
+      return `${pad}${fg("grey", label)}${gap}${label === "Last note" ? inline(value) : fg("chrome", value)}`;
+    }
+    // A mail row: "  Oct 26, 5:26 PM    in   Sender".
+    const mail = line.match(/^(\s{2})(.{18}) (in |out)(\s+)(.*)$/);
+    if (mail) {
+      const [, pad, when, way, gap, who] = mail;
+      const dir = way === "out" ? fg("green", way) : fg("yellow", way);
+      return `${pad}${fg("grey", when)} ${dir}${gap}${who}`;
+    }
+    // The subject row under a mail row, and the track title (two-space indent).
+    if (/^\s{20,}\S/.test(line)) return fg("chrome", line);
+    if (/^\s{2}\S/.test(line)) return `${BOLD}${line}${BOLD_OFF}`;
+    return line;
+  }).join("\n");
+}
+
+// One saved conversation turn, laid out like the live REPL: the user's line
+// behind the ❯ caret, then the [provider:model] tag and the rendered reply.
+// Used when a session is resumed or picked from /history.
+export function renderTurn(turn, { model = "", color = colorEnabled() } = {}) {
+  const text = String(turn?.text ?? "");
+  if (turn?.role === "user") {
+    const body = text.replace(/\n/g, "\n  ");
+    return color ? `${fg("accent", "❯")} ${body}` : `❯ ${body}`;
+  }
+  const replies = isRepliesReport(text);
+  const via = turn?.via || (replies ? "replies:mailcow" : (model ? `local:${model}` : "agent"));
+  const tag = color ? fg("accent", `[${via}]`) : `[${via}]`;
+  const body = replies ? renderReplies(text, { color }) : renderMarkdown(text, { color });
+  return `\n${tag}\n\n${body}`;
+}

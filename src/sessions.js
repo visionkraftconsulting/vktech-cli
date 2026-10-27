@@ -106,11 +106,14 @@ export function latestSession(cwd) {
   return newest ? loadSession(newest.id) : null;
 }
 
-export function appendTranscript(session, role, text) {
+// meta.via ("provider:model") is shown as the turn's tag when it is replayed.
+export function appendTranscript(session, role, text, meta = {}) {
   const body = String(text || "").trim();
   if (!body) return;
   session.transcript ||= [];
-  session.transcript.push({ role, text: body, at: new Date().toISOString() });
+  const row = { role, text: body, at: new Date().toISOString() };
+  if (meta.via) row.via = String(meta.via);
+  session.transcript.push(row);
   if (!session.title && role === "user") session.title = body.slice(0, 80);
   if (session.transcript.length > TRANSCRIPT_CAP) {
     session.transcript.splice(0, session.transcript.length - TRANSCRIPT_CAP);

@@ -52,7 +52,7 @@ const {
 
 // ── Theme ─ (palette lives in src/theme.js, shared with the reply renderer)
 const { TRUECOLOR, NO_COLOR, THEMES, THEME_NAME, PALETTE, C, color } = await import("./theme.js");
-const { renderMarkdown } = await import("./render.js");
+const { renderMarkdown, renderReplies, renderTurn } = await import("./render.js");
 
 // Visible length of a string, ignoring ANSI escape sequences.
 const visLen = (s) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
@@ -1355,10 +1355,11 @@ function printTranscript(session, { limit = 0 } = {}) {
   if (skipped > 0) {
     console.log(color("dim", `… ${skipped} earlier messages. /history prints the full conversation.`));
   }
+  // Same layout as a live turn: "❯ question", then "[provider:model]" and
+  // the reply rendered by the same Markdown / replies renderer.
   for (const turn of rows) {
-    const who = turn.role === "user" ? "you" : (session.model || "agent");
-    console.log(color("chrome", `\n${who}`));
-    console.log(turn.role === "user" ? turn.text : renderMarkdown(turn.text));
+    if (turn.role === "user") console.log("");
+    console.log(renderTurn(turn, { model: session.model }));
   }
   if (rows.length) console.log("");
 }
@@ -1497,12 +1498,17 @@ async function repl() {
     if (isReplyCheck(input)) {
       appendTranscript(session, "user", input);
       saveSession(session);
-      console.log(color("dim", "\nChecking this repo's tracked mail…"));
+      const t0 = Date.now();
+      const spin = startSpinner("checking this repo's tracked mail…");
       try {
         const text = await checkReplies({ cwd, focus: replyFocus(input) });
-        console.log(`\n${text}\n`);
-        appendTranscript(session, "assistant", text);
+        spin.stop();
+        console.log(color("cyan", "\n[replies:mailcow]\n"));
+        console.log(`${renderReplies(text)}\n`);
+        appendTranscript(session, "assistant", text, { via: "replies:mailcow" });
+        statusFooter({ provider: "replies", model: "mailcow", ms: Date.now() - t0, chars: text.length });
       } catch (err) {
+        spin.stop();
         console.error(color("red", `Reply check failed: ${err.message}`));
         appendTranscript(session, "assistant", `(error: ${err.message})`);
       }
@@ -1590,7 +1596,7 @@ async function repl() {
           spin.stop();
           console.log(color("cyan", `\n[${provider}:${model}]\n`));
           console.log(renderMarkdown(text) + "\n");
-          appendTranscript(session, "assistant", text);
+          appendTranscript(session, "assistant", text, { via: `${provider}:${model}` });
           session.messages ||= [];
           session.messages.push({ role: "user", content: fullPrompt });
           session.messages.push({ role: "assistant", content: text });
@@ -1655,7 +1661,7 @@ async function main() {
   if (cmd === "search" || cmd === "web") return doSearch(argv.slice(1));
   if (cmd === "replies") {
     const text = await checkReplies({ cwd: realpathSync(process.cwd()), focus: argv.slice(1).join(" ") });
-    console.log(`\n${text}\n`);
+    console.log(`\n${renderReplies(text)}\n`);
     return;
   }
 
