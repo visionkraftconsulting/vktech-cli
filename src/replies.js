@@ -602,14 +602,15 @@ function sinceDay(now, days) {
   return date.toISOString().slice(0, 10);
 }
 
-export async function checkReplies({ cwd = process.cwd(), projectsRoot, run, now = new Date(), days = 45, focus = "" } = {}) {
+export async function checkReplies({ cwd = process.cwd(), projectsRoot, run, now = new Date(), days = 45, focus = "", detailed = false } = {}) {
   const project = claudeProjectMemory(cwd, { projectsRoot });
   if (!project) {
-    return [
+    const report = [
       "Replies",
       `No Claude memory for ${cwd} or its parent folders.`,
       "Run this from the repo you want checked. vkPay and vkWorkforce each keep their own notes.",
     ].join("\n");
+    return detailed ? { report, notes: "" } : report;
   }
   const tracks = selectTracks(project.memory);
   const since = sinceDay(now, days);
@@ -631,7 +632,7 @@ export async function checkReplies({ cwd = process.cwd(), projectsRoot, run, now
   } else if (tracks.some((track) => track.channel === "gmail")) {
     mailError = "this repo's threads are in Gmail, not Mailcow";
   }
-  return formatReport({
+  const report = formatReport({
     project,
     tracks,
     messages,
@@ -640,4 +641,71 @@ export async function checkReplies({ cwd = process.cwd(), projectsRoot, run, now
     checkedAt: now,
     focus,
   });
+  if (!detailed) return report;
+  return { report, notes: trackNotes(project.memory, tracks, focus) };
+}
+
+// The memory notes behind the threads in the report, for the summary. The
+// report shows one clipped "Last note" per thread; the summary needs the
+// recent history (what we asked, what they said, what is blocked).
+export function trackNotes(memoryDir, tracks, focus = "", maxPerNote = 2500, maxTotal = 12_000) {
+  let shown = tracks || [];
+  if (focus) {
+    const narrowed = shown.filter((track) => focusHits(track, focus));
+    if (narrowed.length) shown = narrowed;
+  }
+  const parts = [];
+  let room = maxTotal;
+  for (const track of shown) {
+    if (room < 300) break;
+    const body = redactText(safeRead(join(memoryDir, track.fileName))).replace(/^---[\s\S]*?\n---\n/, "").trim();
+    if (!body) continue;
+    const cap = Math.min(maxPerNote, room);
+    // Newest facts are appended last, so keep the tail.
+    const text = body.length > cap ? `…${body.slice(-cap)}` : body;
+    parts.push(`## ${track.title}\n${text}`);
+    room -= text.length;
+  }
+  return parts.join("\n\n");
+}
+
+// "check replies" ends with a written answer, like any other agent turn: the
+// table above is the evidence, this is the conclusion.
+export const SUMMARY_SYSTEM = [
+  "You write the closing summary of a \"check replies\" mail report for a small business owner.",
+  "Use only facts from the report and the memory notes you are given. Never invent a reply, a date, a person or a deadline.",
+  "The report shows each message's sender, date and subject only. Do not claim to know what a message body says.",
+  "\"in\" means they wrote to us and \"out\" means we wrote to them. \"Their note is newer\" means we owe a reply.",
+  "",
+  "Format, in Markdown:",
+  "- First line: **Bottom line:** then one or two sentences: which threads are waiting on us, which are waiting on them, and the most urgent item.",
+  "- Then one heading per thread: \"### <thread> (<two to five word status>)\".",
+  "- Under each heading, two to four bullets that start with \"- \". Name the sender, date and subject when you cite a message.",
+  "- Use plain status words in each bullet: confirmed, approved, waiting on us, waiting on them, needs a reply, blocked, not sent, deadline, at risk. Do not type ✓, ✗ or ! yourself; the terminal adds them from those words.",
+  "- End with \"### Next steps (proposals, not sent)\" and one to four numbered items, most urgent first.",
+  "- Last line: \"I did not send any email or change anything.\"",
+  "Keep it short and concrete. Plain words, full sentences, no raw tables.",
+].join("\n");
+
+export function summaryPrompt({ report, notes = "" }) {
+  return [
+    "Mail report:",
+    "```",
+    String(report || "").trim(),
+    "```",
+    notes ? `\nMemory notes for these threads (newest facts are usually last):\n\n${notes}` : "",
+    "\nWrite the summary now.",
+  ].join("\n");
+}
+
+// No summary when there is nothing to summarize.
+export function wantsSummary(report) {
+  const text = String(report || "");
+  if (process.env.VKTECH_REPLIES_SUMMARY === "0") return false;
+  return !/No tracked integration email|No Claude memory for/.test(text);
+}
+
+export async function summarizeReplies({ report, notes, ask, modelArg, signal }) {
+  const out = await ask({ modelArg, prompt: summaryPrompt({ report, notes }), system: SUMMARY_SYSTEM, signal });
+  return { ...out, text: String(out?.text || "").trim() };
 }

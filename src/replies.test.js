@@ -12,6 +12,10 @@ import {
   checkReplies,
   mailcowScript,
   decodeWords,
+  summaryPrompt,
+  summarizeReplies,
+  wantsSummary,
+  SUMMARY_SYSTEM,
 } from "./replies.js";
 
 test("check replies is the status phrase, not a coding request", () => {
@@ -113,6 +117,18 @@ test("each repo contributes only its own tracked threads", async () => {
     assert.doesNotMatch(report, /palmetto|Miriam|PGBA/);
     assert.doesNotMatch(report, /How to quote|build-reply/);
 
+    // The summary gets the same report plus this repo's notes for those threads only.
+    const detailed = await checkReplies({
+      cwd: pay.repo,
+      projectsRoot: join(root, "projects"),
+      now: new Date("2026-10-26T22:00:00Z"),
+      detailed: true,
+      run: async () => ({ code: 0, out: dump, err: "" }),
+    });
+    assert.equal(detailed.report, report);
+    assert.match(detailed.notes, /^## /);
+    assert.doesNotMatch(detailed.notes, /palmetto|Miriam|PGBA/);
+
     const workforce = await checkReplies({
       cwd: workforceRepo.repo,
       projectsRoot: join(root, "projects"),
@@ -173,4 +189,35 @@ test("doveadm output becomes messages and the script stays quoted", () => {
   const script = mailcowScript(["ops@vktech.ai", "not a box"], "2026-09-11");
   assert.match(script, /ops@vktech.ai/);
   assert.doesNotMatch(script, /not a box/);
+});
+
+test("the summary is asked for with the report, the notes and the report rules", async () => {
+  const report = "Replies · vkPay\nPayroll\n  Status     their note is newer. Waiting on us.";
+  let seen;
+  const fakeAsk = async (args) => {
+    seen = args;
+    return { provider: "local", model: "qwen3.8:27b", text: "  **Bottom line:** one thread waits on us.\n" };
+  };
+  const out = await summarizeReplies({ report, notes: "## Payroll\nEveree chosen 2026-10-26.", ask: fakeAsk, modelArg: "local" });
+  assert.equal(out.text, "**Bottom line:** one thread waits on us.");
+  assert.equal(out.provider, "local");
+  assert.equal(seen.modelArg, "local");
+  assert.equal(seen.system, SUMMARY_SYSTEM);
+  assert.match(seen.prompt, /Waiting on us/);
+  assert.match(seen.prompt, /Everee chosen 2026-10-26/);
+  assert.match(SUMMARY_SYSTEM, /Bottom line/);
+  assert.match(SUMMARY_SYSTEM, /Next steps \(proposals, not sent\)/);
+  assert.match(summaryPrompt({ report }), /^Mail report:/);
+});
+
+test("no summary when there is nothing tracked, or when turned off", () => {
+  assert.equal(wantsSummary("Replies · x\nNo tracked integration email in this repo's Claude memory."), false);
+  assert.equal(wantsSummary("Replies\nNo Claude memory for /tmp/x or its parent folders."), false);
+  assert.equal(wantsSummary("Replies · vkPay\nPayroll"), true);
+  process.env.VKTECH_REPLIES_SUMMARY = "0";
+  try {
+    assert.equal(wantsSummary("Replies · vkPay\nPayroll"), false);
+  } finally {
+    delete process.env.VKTECH_REPLIES_SUMMARY;
+  }
 });

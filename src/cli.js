@@ -44,7 +44,7 @@ const { transcribe, collectInputs: listTranscribable } = await import("./transcr
 const { runSecrets } = await import("./secrets.js");
 const { webSearch } = await import("./search.js");
 const { memoryBrief, memoriesForPrompt } = await import("./memories.js");
-const { checkReplies, isReplyCheck, replyFocus } = await import("./replies.js");
+const { checkReplies, isReplyCheck, replyFocus, summarizeReplies, wantsSummary } = await import("./replies.js");
 const {
   createSession, saveSession, latestSession, listSessions, loadSession,
   loadLineHistory, saveLineHistory, appendTranscript, upsertLiveTranscript,
@@ -541,7 +541,7 @@ ${color("bold", "USAGE")}
   vktech dns publish <sub> --ip <a>  Provision a Cloudflare subdomain (paid; VKTECH_LICENSE)
   vktech secrets [-d dir] [--history] Scan working tree (+git history) for leaked secrets
   vktech search "<query>"            Web search (self-hosted SearXNG) answered by local Ollama; --raw, --native
-  vktech replies                     Mail status for this repo's tracked threads (same as "check replies")
+  vktech replies [--raw] [-m model]  Mail status for this repo's tracked threads + a written summary (same as "check replies")
   vktech industries                  Show detectable industries + frameworks
   vktech code "<prompt>"             Implement with the RTX Ollama agent (default ${displayModel("local")})
   vktech code --claude "<prompt>"    Hand the same prompt to Claude Code instead
@@ -1500,19 +1500,45 @@ async function repl() {
       saveSession(session);
       const t0 = Date.now();
       const spin = startSpinner("checking this repo's tracked mail…");
+      let checked = null;
       try {
-        const text = await checkReplies({ cwd, focus: replyFocus(input) });
+        checked = await checkReplies({ cwd, focus: replyFocus(input), detailed: true });
         spin.stop();
         console.log(color("cyan", "\n[replies:mailcow]\n"));
-        console.log(`${renderReplies(text)}\n`);
-        appendTranscript(session, "assistant", text, { via: "replies:mailcow" });
-        statusFooter({ provider: "replies", model: "mailcow", ms: Date.now() - t0, chars: text.length });
+        console.log(`${renderReplies(checked.report)}\n`);
+        appendTranscript(session, "assistant", checked.report, { via: "replies:mailcow" });
+        statusFooter({ provider: "replies", model: "mailcow", ms: Date.now() - t0, chars: checked.report.length });
       } catch (err) {
         spin.stop();
         console.error(color("red", `Reply check failed: ${err.message}`));
         appendTranscript(session, "assistant", `(error: ${err.message})`);
       }
       saveSession(session);
+      // The table is the evidence; the model writes the answer, like any other turn.
+      if (checked && activeModel && wantsSummary(checked.report)) {
+        const t1 = Date.now();
+        const sum = startSpinner(`summarizing with ${activeModel}… (Ctrl-C to skip)`);
+        try {
+          const out = await withQueryCancel((signal) => summarizeReplies({
+            report: checked.report, notes: checked.notes, ask, modelArg: activeModel, signal,
+          }));
+          sum.stop();
+          if (out.text) {
+            console.log(color("cyan", `\n[${out.provider}:${out.model}]\n`));
+            console.log(`${renderMarkdown(out.text)}\n`);
+            appendTranscript(session, "assistant", out.text, { via: `${out.provider}:${out.model}` });
+            session.messages ||= [];
+            session.messages.push({ role: "user", content: input });
+            session.messages.push({ role: "assistant", content: `${checked.report}\n\n${out.text}` });
+            statusFooter({ provider: out.provider, model: out.model, ms: Date.now() - t1, chars: out.text.length });
+          }
+        } catch (err) {
+          sum.stop();
+          if (err?.message === "cancelled") console.log(color("yellow", "\n✗ summary skipped\n"));
+          else console.log(color("dim", `Summary skipped (${err.message}). The report above is complete.`));
+        }
+        saveSession(session);
+      }
       continue;
     }
 
@@ -1660,8 +1686,28 @@ async function main() {
   if (cmd === "secrets" || cmd === "secret-audit") return runSecrets(argv.slice(1), { color, heading: (t) => color("heading", t) });
   if (cmd === "search" || cmd === "web") return doSearch(argv.slice(1));
   if (cmd === "replies") {
-    const text = await checkReplies({ cwd: realpathSync(process.cwd()), focus: argv.slice(1).join(" ") });
-    console.log(`\n${renderReplies(text)}\n`);
+    // --raw prints the mail table only; -m <model> picks who writes the summary.
+    const { model, rest } = extractModel(argv.slice(1));
+    const raw = rest.includes("--raw");
+    const focus = rest.filter((a) => a !== "--raw").join(" ");
+    const { report, notes } = await checkReplies({ cwd: realpathSync(process.cwd()), focus, detailed: true });
+    console.log(`\n${renderReplies(report)}\n`);
+    const modelArg = model || availableProviders()[0];
+    if (raw || !modelArg || !wantsSummary(report)) return;
+    const t0 = Date.now();
+    const spin = startSpinner(`summarizing with ${modelArg}…`);
+    try {
+      const out = await summarizeReplies({ report, notes, ask, modelArg });
+      spin.stop();
+      if (out.text) {
+        console.log(color("cyan", `[${out.provider}:${out.model}]\n`));
+        console.log(`${renderMarkdown(out.text)}\n`);
+        statusFooter({ provider: out.provider, model: out.model, ms: Date.now() - t0, chars: out.text.length });
+      }
+    } catch (err) {
+      spin.stop();
+      console.log(color("dim", `Summary skipped (${err.message}). The report above is complete.`));
+    }
     return;
   }
 
