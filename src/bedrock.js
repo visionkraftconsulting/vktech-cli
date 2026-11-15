@@ -16,10 +16,15 @@
 // converts that thread to Messages API blocks and returns an Ollama-shaped
 // message, so sessions, trimming and the tool loop work unchanged.
 
+import Anthropic from "@anthropic-ai/sdk";
 import { AnthropicBedrock } from "@anthropic-ai/bedrock-sdk";
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
+import { loadAccount, relayError, SUBSCRIBE_URL, useRelay } from "./vkpilot.js";
 
-export const BEDROCK_MODEL = process.env.BEDROCK_MODEL || "us.anthropic.claude-fable-5-2";
+// Signed-in subscribers default to their plan's model (saved by `vktech login`).
+export const BEDROCK_MODEL = process.env.BEDROCK_MODEL
+  || (useRelay() && loadAccount()?.defaultModel)
+  || "us.anthropic.claude-fable-5-2";
 const FALLBACKS = (process.env.BEDROCK_FALLBACK_MODELS
   ?? "us.anthropic.claude-opus-5-5,us.anthropic.claude-opus-4-6-v1")
   .split(",").map((s) => s.trim()).filter(Boolean);
@@ -41,8 +46,23 @@ export function isBedrockModel(model) {
   return /^(us|global|eu|apac)\.anthropic\.|^anthropic\.claude/.test(String(model || ""));
 }
 
+// Two routes to the same models. A vkPilot sign-in (`vktech login`) uses the
+// vkPilot relay, which speaks the Anthropic Messages API and bills the
+// subscription. Without one, calls go straight to Bedrock with local AWS creds.
+export function bedrockRoute() {
+  return useRelay() ? "vkpilot" : "aws";
+}
+
 let client;
 function bedrock() {
+  if (!client && useRelay()) {
+    const account = loadAccount();
+    client = new Anthropic({
+      apiKey: account.token,
+      baseURL: `${account.baseUrl}/api/cli`,
+      maxRetries: Number(process.env.VKTECH_BEDROCK_RETRIES || 6),
+    });
+  }
   if (!client) {
     client = new AnthropicBedrock({
       awsRegion: BEDROCK_REGION,
@@ -69,18 +89,22 @@ export function bedrockActiveModel() {
 
 function noAccess(err) {
   const msg = String(err?.message || "");
+  // A plan or usage limit on the relay is not a missing model: stop there.
+  if (err?.status === 402 || (err?.status === 403 && /subscri|usage|credit|plan/i.test(msg))) return false;
   return (err?.status === 403 && /not available for this account|access/i.test(msg))
     || (err?.status === 404 && /model/i.test(msg))
     || (err?.status === 400 && /Invalid API version/i.test(msg));
 }
 
 function friendly(err) {
+  const relayed = bedrockRoute() === "vkpilot" ? relayError(err) : null;
+  if (relayed) return relayed;
   const msg = String(err?.message || err);
   if (err?.status === 429) {
     return new Error("Bedrock is throttling this account (429 after retries). Wait a minute, or ask AWS for a higher on-demand quota for this model.");
   }
   if (/resolve AWS credentials|token has expired|SSO session|ExpiredToken|refresh token/i.test(msg)) {
-    return new Error(`AWS credentials for Bedrock are missing or expired. Run: aws sso login --profile ${BEDROCK_PROFILE}`);
+    return new Error(`No Bedrock access on this machine. Subscribers: run vktech login (plans at ${SUBSCRIBE_URL}). AWS users: aws sso login --profile ${BEDROCK_PROFILE}`);
   }
   return err instanceof Error ? err : new Error(msg);
 }
