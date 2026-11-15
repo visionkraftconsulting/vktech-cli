@@ -117,14 +117,20 @@ async function ollamaAnswer(model, prompt) {
  * @param {object} opts { model, fetchN, raw, native }
  */
 export async function webSearch(query, opts = {}) {
-  const model = opts.model || "qwen2.5:7b";
+  // Claude on Bedrock (or the vkPilot relay) writes the answer by default.
+  // An Ollama id (qwen2.5:7b) or -m local uses the self-hosted box instead.
+  const wantsOllama = opts.model && (/^(local|ollama)$/i.test(opts.model) || (/:/.test(opts.model) && !/anthropic\./.test(opts.model)));
+  const { askBedrock, bedrockActiveModel, isBedrockModel } = await import("./bedrock.js");
+  const model = wantsOllama
+    ? (/^(local|ollama)$/i.test(opts.model) ? "qwen2.5:7b" : opts.model)
+    : (opts.model && isBedrockModel(opts.model) ? opts.model : null);
   const fetchN = opts.fetchN ?? 3;
 
   const { base, results } = opts.native ? await searchNative(query) : await searchSearxng(query);
   if (!results.length) throw new Error(`no results for: ${query}`);
   const backend = opts.native ? "ollama-cloud" : `searxng (${base})`;
 
-  if (opts.raw) return { answer: null, results, backend, model };
+  if (opts.raw) return { answer: null, results, backend, model: model || "bedrock" };
 
   // Deep-fetch top N pages, snippets for the rest, build cited context.
   const parts = [];
@@ -139,6 +145,10 @@ export async function webSearch(query, opts = {}) {
     `If the results don't cover it, say so.\n\n` +
     `QUESTION: ${query}\n\nWEB RESULTS:\n${parts.join("\n")}`;
 
-  const answer = await ollamaAnswer(model, prompt);
-  return { answer, results, backend, model };
+  if (wantsOllama) {
+    const answer = await ollamaAnswer(model, prompt);
+    return { answer, results, backend, model };
+  }
+  const answer = await askBedrock({ prompt, model: model || undefined });
+  return { answer, results, backend, model: bedrockActiveModel() };
 }
