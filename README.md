@@ -1,7 +1,7 @@
 # vktech
 
 **Multi-provider AI analysis CLI & library** — query Claude on Amazon Bedrock, OpenAI,
-Google Gemini, xAI Grok, or the RTX 5090's Ollama for code and architecture analysis.
+Google Gemini, xAI Grok, or a self-hosted Ollama box for code and architecture analysis.
 Implementation defaults to a Claude-on-Bedrock coding agent (Claude Fable 5.2, falling back
 to Opus 5.5, then Opus 4.6, when the AWS account has no access to the newer model).
 `-m local` runs the same agent on Ollama (`qwen3.8:27b`). `--claude` still hands a prompt to
@@ -19,15 +19,17 @@ to Opus 5.5, then Opus 4.6, when the AWS account has no access to the newer mode
   report; agreements are high-confidence, disagreements are flagged for review.
 - 📋 **Audit templates** — curated prompt + file bundle for HIPAA/ISO, security, prod-readiness,
   architecture. `audit auto` detects the project's industry and picks the frameworks.
-- 💬 **Modern REPL** — the default `vktech` chat is the RTX agent: it edits the
-  working directory, runs commands, searches the web, and checks the GPU.
+- 💬 **Modern REPL** — the default `vktech` chat is the Claude coding agent (on Bedrock, or
+  through vkPilot when you are signed in with `vktech login`): it edits the working directory,
+  runs commands (including ops: `aws`, `doctl`, `ssh host 'cmd'`, and `aws_ssm` for SSM-only
+  boxes, with a y/N prompt before anything that changes infrastructure), and searches the web.
   Every session loads memories from Claude, Grok, Codex, Cursor, and Gemini,
   and each prompt searches those notes for the words you used.
   The input window stays pinned to the bottom and redraws to the terminal width.
   Conversations are saved per folder as the turn runs, so quitting mid-command
   resumes on the next launch. `/history` lists them, `/history <n>`
   continues one, `/new` starts fresh. Up/Down recalls what you typed.
-- 🤝 **RTX coding agent** — `vktech code "…"` (or `/code` in the REPL) is the same
+- 🤝 **Coding agent** — `vktech code "…"` (or `/code` in the REPL) is the same
   agent as a one-shot. `vktech code --claude "…"` uses Claude Code instead.
 
 ---
