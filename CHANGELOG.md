@@ -3,6 +3,19 @@
 All notable changes to vktech are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-11-15
+
+### Added
+- Claude on Amazon Bedrock is the default provider and coding agent (REPL, `vktech code`,
+  `ask`, vision). Default model Claude Fable 5.2, falling back to Opus 5.5 and then Opus 4.6 when
+  the AWS account lacks access. `-m local` keeps the Ollama agent.
+- `vktech login` / `logout` / `whoami`: sign in to vkPilot so Claude and web search run on your
+  subscription through the vkPilot relay, with no AWS account needed.
+- Ops from the agent: `aws`, `doctl`, `ssh host 'cmd'`, `aws_ssm`. A y/N prompt runs before any
+  command that changes infrastructure. `run` takes `timeout_seconds` (up to 3600).
+- Web search on AWS through the relay (Bedrock Nova grounding). SearXNG is opt-in with
+  `VKTECH_SEARCH=searxng`.
+
 ## [1.2.0]
 
 ### Added
