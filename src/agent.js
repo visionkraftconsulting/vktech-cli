@@ -1138,13 +1138,13 @@ function mergeArgs(prev, next) {
 async function webSearchTool(query) {
   const q = String(query || "").trim();
   if (!q) return "query is empty";
-  const { backend, results } = await searchResults(q, { limit: 6 });
-  if (!results.length) return `no results for: ${q}`;
+  const { backend, results, answer } = await searchResults(q, { limit: 6 });
+  if (!results.length && !answer) return `no results for: ${q}`;
   const lines = results.map((hit, i) => {
     const snippet = String(hit.content || "").replace(/\s+/g, " ").slice(0, 400);
     return `${i + 1}. ${hit.title || "(no title)"}\n   ${hit.url || ""}\n   ${snippet}`;
   });
-  return `backend: ${backend}\n${lines.join("\n")}`;
+  return `backend: ${backend}\n${answer ? `answer: ${answer}\n` : ""}${lines.join("\n")}`;
 }
 
 async function rtxStatus() {

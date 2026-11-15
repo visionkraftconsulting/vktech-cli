@@ -87,7 +87,9 @@ When you are signed in, Claude calls go through the vkPilot relay
 (`https://pilot.vktech.ai/api/cli/v1/messages`, an Anthropic Messages-compatible endpoint).
 vkPilot runs the Bedrock calls and bills your plan. Your prompts and code context pass through
 vkPilot on the way to Bedrock. Plans: https://pilot.vktech.ai/vktech. `VKTECH_BEDROCK_DIRECT=1`
-skips the relay and uses your own AWS profile. The relay contract is in `docs/vkpilot-relay.md`.
+skips the relay and uses your own AWS profile. Signed in, web search (`vktech search` and the
+agent's `web_search`) also runs on AWS through vkPilot; `VKTECH_SEARCH=searxng` uses a
+self-hosted SearXNG instead. The relay contract is in `docs/vkpilot-relay.md`.
 
 ### xAI via the `grok` CLI (default)
 
