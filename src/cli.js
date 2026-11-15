@@ -915,7 +915,9 @@ async function doSearch(argv) {
     console.error(color("red", 'Usage: vktech search "<query>" [-m model] [-n N] [--raw] [--native]'));
     process.exit(1);
   }
-  const spin = startSpinner(native ? "searching (ollama cloud)…" : "searching (searxng)…");
+  const { searchBackend } = await import("./search.js");
+  const which = await searchBackend({ native });
+  const spin = startSpinner(`searching (${which === "relay" ? "vkPilot · AWS" : which === "native" ? "ollama cloud" : "searxng"})…`);
   const t0 = Date.now();
   try {
     const { answer, results, backend, model: usedModel } = await webSearch(query, { model, fetchN, raw, native });

@@ -81,12 +81,59 @@ async function fetchPage(url, max = 2000) {
   }
 }
 
-// Search hits only — no second model call. The REPL agent reads these and answers.
-export async function searchResults(query, opts = {}) {
-  const { base, results } = opts.native ? await searchNative(query) : await searchSearxng(query);
-  const limit = opts.limit ?? 8;
+// Web search on AWS through the vkPilot relay (Bedrock Nova grounding).
+// Returns a short cited answer plus the cited pages. Needs `vktech login`.
+async function searchRelay(query, { recent = false, limit = 8 } = {}) {
+  const { loadAccount, relayError } = await import("./vkpilot.js");
+  const account = loadAccount();
+  if (!account?.token) throw new Error("web search needs a vkPilot sign-in. Run: vktech login (or VKTECH_SEARCH=searxng)");
+  const res = await fetch(`${account.baseUrl}/api/cli/v1/search`, {
+    method: "POST",
+    signal: AbortSignal.timeout(Number(process.env.VKTECH_SEARCH_TIMEOUT_MS || 90_000)),
+    headers: { "Content-Type": "application/json", "x-api-key": account.token },
+    body: JSON.stringify({ query, recent: Boolean(recent), limit: Math.max(1, Math.min(10, Number(limit) || 8)) }),
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok) {
+    const err = new Error(`${res.status} ${data?.error?.message || data?.raw?.slice?.(0, 200) || res.statusText}`);
+    err.status = res.status;
+    throw relayError(err) || err;
+  }
   return {
-    backend: opts.native ? "ollama-cloud" : `searxng (${base})`,
+    base: `vkpilot (${data.provider || "bedrock"})`,
+    answer: String(data.answer || "").trim(),
+    costUsd: data.costUsd,
+    results: (data.results || []).map((r) => ({ title: r.title, url: r.url, content: r.snippet || "", published: r.published })),
+  };
+}
+
+// Which search backend runs: VKTECH_SEARCH=relay|searxng|native. Default:
+// the vkPilot relay when signed in, else the self-hosted SearXNG.
+export async function searchBackend(opts = {}) {
+  if (opts.native) return "native";
+  const pick = String(process.env.VKTECH_SEARCH || "").toLowerCase();
+  if (["relay", "searxng", "native"].includes(pick)) return pick;
+  const { useRelay } = await import("./vkpilot.js");
+  return useRelay() ? "relay" : "searxng";
+}
+
+async function runSearch(query, opts) {
+  const which = await searchBackend(opts);
+  if (which === "relay") return { which, ...(await searchRelay(query, opts)) };
+  if (which === "native") return { which, answer: "", ...(await searchNative(query)) };
+  return { which, answer: "", ...(await searchSearxng(query)) };
+}
+
+// Search hits (plus the relay's short cited answer, when it gives one).
+// No second model call: the REPL agent reads these and answers.
+export async function searchResults(query, opts = {}) {
+  const { which, base, results, answer } = await runSearch(query, opts);
+  const limit = opts.limit ?? 8;
+  if (which === "relay") return { backend: base, answer, results: (results || []).slice(0, limit) };
+  return {
+    backend: which === "native" ? "ollama-cloud" : `searxng (${base})`,
     results: (results || []).slice(0, limit),
   };
 }
@@ -126,11 +173,17 @@ export async function webSearch(query, opts = {}) {
     : (opts.model && isBedrockModel(opts.model) ? opts.model : null);
   const fetchN = opts.fetchN ?? 3;
 
-  const { base, results } = opts.native ? await searchNative(query) : await searchSearxng(query);
-  if (!results.length) throw new Error(`no results for: ${query}`);
-  const backend = opts.native ? "ollama-cloud" : `searxng (${base})`;
+  const found = await runSearch(query, opts);
+  const { base, results } = found;
+  if (!results.length && !found.answer) throw new Error(`no results for: ${query}`);
+  const backend = found.which === "relay" ? base : found.which === "native" ? "ollama-cloud" : `searxng (${base})`;
 
   if (opts.raw) return { answer: null, results, backend, model: model || "bedrock" };
+  // The relay already wrote a cited answer. Use it unless a model was asked for.
+  if (found.which === "relay" && !opts.model) {
+    const sources = results.map((r) => `- ${r.title || r.url}: ${r.url}`).join("\n");
+    return { answer: sources ? `${found.answer}\n\nSources:\n${sources}` : found.answer, results, backend, model: "nova-grounding" };
+  }
 
   // Deep-fetch top N pages, snippets for the rest, build cited context.
   const parts = [];
