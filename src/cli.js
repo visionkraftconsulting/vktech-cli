@@ -1254,9 +1254,28 @@ async function doAudit(argv) {
 // already released stdin, so re-attach a raw keypress watcher plus SIGINT.
 async function withQueryCancel(fn) {
   const ac = new AbortController();
-  const cancel = () => { if (!ac.signal.aborted) ac.abort(new Error("cancelled")); };
-  const tty = process.stdin.isTTY && process.stdout.isTTY && !NO_COLOR;
-  const onWatchKey = (_str, key) => { if (key && key.ctrl && key.name === "c") cancel(); };
+  // A pending y/N question from the agent (risky command approval).
+  let answer = null;
+  const cancel = () => {
+    if (answer) { const done = answer; answer = null; done(false); }
+    if (!ac.signal.aborted) ac.abort(new Error("cancelled"));
+  };
+  const tty = process.stdin.isTTY && process.stdout.isTTY;
+  const onWatchKey = (str, key) => {
+    if (key && key.ctrl && key.name === "c") return cancel();
+    if (!answer) return;
+    const done = answer;
+    answer = null;
+    const yes = /^y$/i.test(str || "");
+    process.stdout.write(yes ? "y\n" : "n\n");
+    done(yes);
+  };
+  // Asked only on a terminal. Piped runs decline (VKTECH_AGENT_APPROVE=all approves).
+  const confirm = tty ? (command) => new Promise((resolve) => {
+    const shown = String(command).length > 300 ? `${String(command).slice(0, 300)}…` : String(command);
+    process.stdout.write(`\n${color("yellow", "⚠ This command changes something:")}\n  ${shown}\n${color("yellow", "Run it? [y/N] ")}`);
+    answer = resolve;
+  }) : undefined;
   if (tty) {
     emitKeypressEvents(process.stdin);
     if (process.stdin.isRaw !== true) process.stdin.setRawMode(true);
@@ -1265,7 +1284,7 @@ async function withQueryCancel(fn) {
   }
   process.once("SIGINT", cancel);
   try {
-    return await fn(ac.signal);
+    return await fn(ac.signal, confirm);
   } catch (err) {
     if (ac.signal.aborted) throw new Error("cancelled");
     throw err;
@@ -1338,11 +1357,12 @@ async function executeCode(argv, { exitOnEnd = false } = {}) {
   console.log(color("magenta", `→ ${agentLabel(model) === "bedrock" ? "Bedrock" : "RTX Ollama"} agent (${model})\n`) + color("dim", `  ${dir}\n`));
   const t0 = Date.now();
   try {
-    const result = await withQueryCancel((signal) => runLocalAgent({
+    const result = await withQueryCancel((signal, confirm) => runLocalAgent({
       prompt: parsed.prompt,
       cwd: dir,
       model,
       signal,
+      confirm,
       spin: (label) => startSpinner(`${label}  (Ctrl-C to cancel)`),
       log: (s) => process.stderr.write(color("dim", s.endsWith("\n") ? s : s + "\n")),
       write: (s) => process.stdout.write(s),
@@ -1590,12 +1610,13 @@ async function repl() {
         session.model = model;
         session.messages ||= [];
         console.log(color("cyan", `\n[${agentLabel(model)}:${model}]\n`));
-        const result = await withQueryCancel((signal) => runLocalAgent({
+        const result = await withQueryCancel((signal, confirm) => runLocalAgent({
           prompt: fullPrompt,
           cwd,
           model,
           messages: session.messages,
           signal,
+          confirm,
           onTrace: checkpoint,
           spin: (label) => startSpinner(`${label}  (Ctrl-C to cancel)`),
           log: (s) => process.stderr.write(color("dim", s.endsWith("\n") ? s : s + "\n")),

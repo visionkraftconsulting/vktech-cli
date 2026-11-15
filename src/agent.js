@@ -122,11 +122,12 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run",
-      description: "Run a shell command with the workspace as the working directory. Use it for tests, typechecks, and short inspections.",
+      description: "Run a shell command with the workspace as the working directory: tests, typechecks, inspections, and ops (aws with --profile vk-admin, doctl, ssh <host> '<cmd>'). There is no terminal: no interactive prompts, so use ssh with a command, sudo -n, and aws_ssm for SSM-only boxes instead of start-session. Commands that change infrastructure ask the user first.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string" },
+          timeout_seconds: { type: "number", description: "Kill the command after this many seconds. Default 120; up to 3600 for deploys and long builds." },
         },
         required: ["command"],
       },
@@ -196,6 +197,47 @@ const BLOCKED_SHELL = [
   /\bdd\b[^;&|\n]*\bof=\/dev\//,
   /:\(\)\s*\{\s*:\|:&\s*\}\s*;/,
 ];
+
+// Commands that change real infrastructure or lose work. They run only after
+// the user says yes (the REPL asks y/N). Reads (status, logs, describe-*,
+// get-*, list-*) never ask. VKTECH_AGENT_APPROVE=all skips the question.
+const RISKY_SHELL = [
+  /\b(systemctl|service)\s+(?:--\S+\s+)*(restart|stop|start|disable|enable|reload|kill|mask|daemon-reload)\b/,
+  /\brm\s+-[a-zA-Z]*(rf|fr)\b|\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f/,
+  /\bgit\s+push\b[^;&|\n]*(--force|-f\b|--delete|\s:\S)/,
+  /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|branch\s+-D)\b/,
+  /\b(terraform|tofu)\s+(apply|destroy|import|taint|state\s+(rm|mv))\b/,
+  /\bdoctl\b[^;&|\n]*\b(delete|destroy|power-off|power-on|power-cycle|shutdown|reboot|rebuild|resize|restore|create)\b/,
+  /\baws\b[^;&|\n]*\s(delete-\S+|terminate-\S+|stop-\S+|reboot-\S+|put-\S+|update-\S+|create-\S+|modify-\S+|remove-\S+|detach-\S+|deregister-\S+|run-instances|send-command|start-session|restore-\S+|revoke-\S+|authorize-\S+)\b/,
+  /\baws\s+s3\s+(rm|mv|sync|rb)\b|\baws\s+s3\s+cp\s+(?!s3:\/\/)\S+\s+s3:\/\//,
+  /(^|[\s\/;&|])(deploy[-\w]*\.sh|deploy-box\.sh|ssm-run\.sh)\b/,
+  /\bgh\s+(pr\s+merge|release\s+(create|delete)|repo\s+delete)\b|\bnpm\s+publish\b/,
+  /\b(drop|truncate)\s+(table|database|schema)\b|\bdelete\s+from\b/i,
+  /\b(pkill|killall)\b|\bkill\s+-9\b/,
+  /\b(docker|docker-compose)\s+(compose\s+)?(rm|down|stop|restart|kill|system\s+prune|volume\s+rm)\b/,
+  /\b(apt|apt-get|dnf|yum)\s+(install|remove|purge|upgrade|dist-upgrade)\b/,
+  /\bcrontab\s+-r\b|\bufw\s+(allow|deny|delete|disable|reset)\b|\biptables\s+-[ADFIX]\b|\bnft\s+(add|delete|flush)\b/,
+  /\bcloudflared\s+tunnel\s+(delete|route|cleanup)\b/,
+];
+
+export function riskyShellCommand(command) {
+  const cmd = String(command || "");
+  return RISKY_SHELL.some((re) => re.test(cmd));
+}
+
+// Ask before a risky command. No way to ask (piped, library use) = decline.
+async function approved(command, hooks) {
+  if (!riskyShellCommand(command)) return true;
+  if (/^(all|1|yes|true)$/i.test(process.env.VKTECH_AGENT_APPROVE || "")) return true;
+  if (typeof hooks?.confirm !== "function") return false;
+  try {
+    return Boolean(await hooks.confirm(String(command)));
+  } catch {
+    return false;
+  }
+}
+
+const DECLINED = (cmd) => `declined: the user did not approve this command, so it did not run:\n${String(cmd).slice(0, 400)}\nDo not run it another way. Tell the user what it would do and ask them.`;
 
 export function blockedShellCommand(command) {
   const cmd = String(command || "");
@@ -539,11 +581,14 @@ export function runProcess(cmd, args, cwd, timeoutMs, hooks = {}) {
   });
 }
 
-export async function runShell(root, command, hooks) {
+export async function runShell(root, command, hooks, timeoutSeconds) {
   const cmd = String(command || "").trim();
   if (!cmd) return "command is empty";
   if (blockedShellCommand(cmd)) return "refused: that command is destructive. Pick a narrower one.";
-  const timeout = Number(process.env.VKTECH_AGENT_CMD_TIMEOUT_MS || 120_000);
+  if (!(await approved(cmd, hooks))) return DECLINED(cmd);
+  const cap = Number(process.env.VKTECH_AGENT_CMD_MAX_TIMEOUT_MS || 3_600_000);
+  const asked = Number(timeoutSeconds) > 0 ? Number(timeoutSeconds) * 1000 : 0;
+  const timeout = Math.min(cap, asked || Number(process.env.VKTECH_AGENT_CMD_TIMEOUT_MS || 120_000));
   const [bin, args] = shellInvocation(cmd);
   const r = await runProcess(bin, args, realpathSync(root), timeout, hooks);
   const body = cleanStream([r.out, r.err].filter(Boolean).join("\n"));
@@ -572,7 +617,7 @@ async function dispatch(root, name, args, touched, hooks) {
         return res;
       }
       case "run":
-        return await runShell(root, args.command, hooks);
+        return await runShell(root, args.command, hooks, args.timeout_seconds);
       case "web_search":
         return await webSearchTool(args.query);
       case "web_fetch":
@@ -583,6 +628,7 @@ async function dispatch(root, name, args, touched, hooks) {
         return readMemory(args.query, root);
       case "aws_ssm": {
         if (blockedShellCommand(args.script)) return "blocked: that command is not allowed";
+        if (!(await approved(args.script, hooks))) return DECLINED(args.script);
         const host = args.host || defaultSsmHost();
         return formatSsmResult(host, await ssmRun({ host, script: args.script, signal: hooks?.signal }));
       }
@@ -609,7 +655,8 @@ function systemPrompt(cwd, numCtx = 32768, onBedrock = false) {
     "Prefer edit_file for changes. Use write_file only when creating a file or replacing one wholesale.",
     "After you change behavior, run the project's check when one exists.",
     "Earlier turns of this conversation are in the message history. Continue from them. When a follow-up question can be answered from facts or a report already in this conversation, answer from those first and say so, before running anything new.",
-    `A running command's output is shown as it prints. Commands stop after ${Math.round(Number(process.env.VKTECH_AGENT_CMD_TIMEOUT_MS || 120_000) / 1000)} seconds and a timeout is a failure. Check status directly.`,
+    `A running command's output is shown as it prints. Commands stop after ${Math.round(Number(process.env.VKTECH_AGENT_CMD_TIMEOUT_MS || 120_000) / 1000)} seconds unless you pass timeout_seconds (up to 3600 for deploys), and a timeout is a failure. Check status directly.`,
+    "Ops access from this machine: aws (SSO profile vk-admin, us-west-2), doctl, and ssh to the hosts in ~/.ssh/config (e.g. ssh dell '<cmd>', sudo -n on the box). Commands have no terminal, so never use interactive forms (aws ssm start-session, ssh without a command, sudo prompting). Commands that change infrastructure (restarts, deploys, deletes, pushes, DB writes) ask the user to approve first. If one is declined, do not try another route to do the same thing.",
     "Follow the CLAUDE.md instructions below. They are newer than the memories. When the two disagree, for example a memory names a host that has since moved, CLAUDE.md wins.",
     `Boxes with no inbound SSH are reached with the aws_ssm tool (configured: ${Object.keys(ssmHosts()).join(", ") || "none"}). CLAUDE.md says which app runs where. You DO have SSM access from this machine; never say you lack it unless aws_ssm returned an error, and then quote that error. A copy CLAUDE.md calls frozen or rollback-only is not live state.`,
     "If one approach fails twice, stop retrying it. Try a different route or report what blocked you.",
@@ -624,7 +671,7 @@ function systemPrompt(cwd, numCtx = 32768, onBedrock = false) {
   // CLAUDE.md gets about a quarter of the context (≈3 chars/token), so a
   // 16k runner still leaves room for the task and the gathered facts.
   const instructionChars = Math.min(
-    Number(process.env.VKTECH_INSTRUCTIONS_CHARS || 28_000),
+    Number(process.env.VKTECH_INSTRUCTIONS_CHARS || (onBedrock ? 64_000 : 28_000)),
     Math.max(4000, Math.floor(Number(numCtx) * 3 * 0.25)),
   );
   return `${rules}\n\n${REPORT_STYLE}\n\n${instructionFiles(cwd, instructionChars)}\n\n${memories}`;
@@ -1121,7 +1168,7 @@ async function rtxStatus() {
  * Run the local coding agent.
  * @returns {Promise<{model:string, text:string, turns:number, files:string[], messages:object[]}>}
  */
-export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal, spin, log, write, messages: prior, onTrace }) {
+export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal, spin, log, write, messages: prior, onTrace, confirm }) {
   if (!prompt || !String(prompt).trim()) throw new Error("empty prompt");
   if (!existsSync(cwd)) throw new Error(`workspace not found: ${cwd}`);
   const root = realpathSync(cwd);
@@ -1379,6 +1426,14 @@ export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal
       let result;
       let streamed = 0;
       try {
+        // The status line redraws with \r; stop it so the question stays put.
+        const askFirst = confirm ? async (command) => {
+          activity.stop();
+          const yes = await confirm(command);
+          activity.line(dim(yes ? "  approved" : "  declined"));
+          activity.set(`${usedModel} · ${label}`, true);
+          return yes;
+        } : undefined;
         const runHooks = name === "run" ? {
           signal,
           onOutput(line) {
@@ -1400,7 +1455,8 @@ export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal
             const bit = oneLine(partial, 80);
             activity.set(bit ? `${usedModel} · ${label} · ${bit}` : `${usedModel} · ${label}`);
           },
-        } : name === "aws_ssm" ? { signal } : undefined;
+          confirm: askFirst,
+        } : name === "aws_ssm" ? { signal, confirm: askFirst } : undefined;
         result = redactText(clip(await dispatch(root, name, args, touched, runHooks)));
         seenCalls.set(callKey, oneLine(result, 2000));
       } finally {
