@@ -1,6 +1,6 @@
 {
   "name": "vktech",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Multi-provider AI analysis CLI & library (Claude on Bedrock, OpenAI, Gemini, xAI, RTX Ollama). Code implementation defaults to a Claude-on-Bedrock agent. Includes an automated video-editing engine (vktech edit).",
   "type": "module",
   "main": "./src/index.js",
