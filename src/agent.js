@@ -1,5 +1,6 @@
-// Local coding agent. Talks to Ollama on the rtx5090 (native /api/chat + tools)
-// and edits the working tree. The REPL uses this for plain text on `local`.
+// Coding agent. Talks to Claude on Amazon Bedrock by default (src/bedrock.js),
+// or to Ollama on the rtx5090 (native /api/chat + tools) when the model is an
+// Ollama id such as qwen3.8:27b, and edits the working tree. The REPL uses this for plain text on `local`.
 // `vktech code` is the one-shot. `--claude` still shells out to Claude Code.
 //
 // Context joins whatever runner is already hot (see localNumCtx). A different
@@ -12,6 +13,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { DEFAULTS, LOCAL_URL, localKeepAlive, localNumCtx, localTextOptions } from "./providers.js";
+import { BEDROCK_CONTEXT_TOKENS, bedrockChat, isBedrockModel } from "./bedrock.js";
 import { memoryBrief, memoriesForPrompt, readMemory, redactText } from "./memories.js";
 import { checkReplies, isReplyCheck, replyFocus } from "./replies.js";
 import { fetchWebText, searchResults } from "./search.js";
@@ -592,9 +594,11 @@ async function dispatch(root, name, args, touched, hooks) {
   }
 }
 
-function systemPrompt(cwd, numCtx = 32768) {
+function systemPrompt(cwd, numCtx = 32768, onBedrock = false) {
   const rules = [
-    "You are vktech, the user's coding agent. You are already running on their RTX 5090 through Ollama.",
+    onBedrock
+      ? "You are vktech, the user's coding agent, running on Claude through Amazon Bedrock. The rtx_status tool checks the user's separate RTX 5090 Ollama box."
+      : "You are vktech, the user's coding agent. You are already running on their RTX 5090 through Ollama.",
     "You can edit files, run commands, search the web, open pages, inspect that GPU, and read memories from Claude, Grok, Codex, Cursor, and Gemini. Do those things with the tools.",
     "When asked to fix code, fix it. When asked to browse, call web_search and web_fetch. When asked if you can reach the RTX, call rtx_status and report what it returns.",
     "Every user prompt already includes a memory check for the words they used, such as edit or replies. Use those notes. Call read_memory to open a title the check did not include.",
@@ -850,6 +854,18 @@ async function ollamaChat({ model, messages, signal, timeoutMs, onDelta, tools =
 }
 
 async function chatWithRetry(opts) {
+  if (isBedrockModel(opts.model)) {
+    return bedrockChat({
+      model: opts.model,
+      messages: opts.messages,
+      tools: opts.tools,
+      allTools: TOOLS,
+      signal: opts.signal,
+      timeoutMs: opts.timeoutMs,
+      onDelta: opts.onDelta,
+      isControl: (content) => CONTROL_PROMPTS.has(content),
+    });
+  }
   const mark = { emitted: false };
   const onDelta = opts.onDelta;
   const wrapped = {
@@ -1119,9 +1135,10 @@ export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal
     messages.push({ role: "user", content: String(prompt) });
     messages.push({ role: "assistant", content: text });
     onTrace?.({ phase: "done", text, messages });
-    return { model: model || DEFAULTS.local, text, turns: 0, files: [], messages };
+    return { model: model || DEFAULTS.bedrock, text, turns: 0, files: [], messages };
   }
-  const usedModel = model || DEFAULTS.local;
+  let usedModel = model || DEFAULTS.bedrock;
+  const onBedrock = isBedrockModel(usedModel);
   const maxTurns = Math.max(1, Number(process.env.VKTECH_AGENT_TURNS || 24));
   const timeoutMs = Math.max(
     Number(process.env.VKTECH_TIMEOUT_MS || 0),
@@ -1151,8 +1168,8 @@ export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal
   // `prior` is the saved conversation. The same array is appended and returned
   // so the REPL can persist it and continue next turn.
   const messages = Array.isArray(prior) ? prior : [];
-  const ctxLen = await localNumCtx(usedModel);
-  const promptText = systemPrompt(root, ctxLen);
+  const ctxLen = onBedrock ? BEDROCK_CONTEXT_TOKENS : await localNumCtx(usedModel);
+  const promptText = systemPrompt(root, ctxLen, onBedrock);
   if (messages[0]?.role === "system") messages[0] = { ...messages[0], content: promptText };
   else messages.unshift({ role: "system", content: promptText });
   // A previous quit may have saved an assistant tool call with no result.
@@ -1272,6 +1289,8 @@ export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal
     });
     md.flush();
     activity.stop();
+    // Bedrock may have fallen back to another model in its chain.
+    if (body?.model) usedModel = body.model;
     const msg = body?.message || {};
     let calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
     // A no-tools turn (report) or a made-up tool name (qwen once called
@@ -1283,6 +1302,10 @@ export async function runLocalAgent({ prompt, cwd = process.cwd(), model, signal
       calls = calls.filter((c) => offered.has(c?.function?.name));
       if (calls.length) msg.tool_calls = calls;
       else delete msg.tool_calls;
+      if (Array.isArray(msg._blocks)) {
+        const kept = new Set(calls.map((c) => c.id));
+        msg._blocks = msg._blocks.filter((b) => b.type !== "tool_use" || kept.has(b.id));
+      }
       if (!calls.length && !String(msg.content || "").trim() && bogusPass < 1) {
         bogusPass += 1;
         bol();

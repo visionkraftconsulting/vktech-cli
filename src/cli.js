@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// vktech — multi-provider AI analysis CLI. Code work defaults to the RTX Ollama agent.
+// vktech — multi-provider AI analysis CLI. Code work defaults to the Claude-on-Bedrock agent.
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, isAbsolute, basename } from "node:path";
 // dirname is already imported above for __dirname; reused for output paths.
@@ -513,7 +513,7 @@ function version() {
 
 const ANALYSIS_SYSTEM =
   "You are a senior software engineer doing code and architecture ANALYSIS. " +
-  "Be precise and actionable. You are NOT editing files — `vktech code` (the RTX Ollama agent) " +
+  "Be precise and actionable. You are NOT editing files — `vktech code` (the Bedrock coding agent) " +
   "will implement changes. Point out bugs, risks, and concrete recommendations.";
 
 // Cloud providers in the REPL have no tool loop. The local provider does.
@@ -524,10 +524,10 @@ const REPL_CLOUD_SYSTEM =
 
 function help() {
   console.log(`
-${color("bold", "vktech")} v${version()} — analyze with several models, implement with the RTX Ollama agent
+${color("bold", "vktech")} v${version()} — analyze with several models, implement with the Claude-on-Bedrock agent
 
 ${color("bold", "USAGE")}
-  vktech                              Start the RTX agent REPL (edits, browses, remembers)
+  vktech                              Start the agent REPL on Bedrock (edits, browses, remembers)
   vktech ask --model <m> "<prompt>"  One-shot analysis with a provider
   vktech ask -i <img> "<prompt>"     Vision analysis (self-hosted by default; $0 API)
   vktech audit [template] [-d dir]   Run a saved audit template over a project
@@ -543,7 +543,7 @@ ${color("bold", "USAGE")}
   vktech search "<query>"            Web search (self-hosted SearXNG) answered by local Ollama; --raw, --native
   vktech replies [--raw] [-m model]  Mail status for this repo's tracked threads + a written summary (same as "check replies")
   vktech industries                  Show detectable industries + frameworks
-  vktech code "<prompt>"             Implement with the RTX Ollama agent (default ${displayModel("local")})
+  vktech code "<prompt>"             Implement with the Bedrock agent (default ${displayModel("bedrock")}; -m local for Ollama)
   vktech code --claude "<prompt>"    Hand the same prompt to Claude Code instead
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
   vktech sh                          Paste a shell snippet → run with bash
@@ -553,7 +553,8 @@ ${color("bold", "USAGE")}
   vktech --version
 
 ${color("bold", "MODELS")} (for --model / -m — default priority: ${PRIORITY.join(" › ")})
-  ${color("cyan", "local, ollama")}   -> RTX Ollama  (${displayModel("local")})  ${color("dim", "default")}
+  ${color("cyan", "bedrock, fable")}  -> Bedrock     (${displayModel("bedrock")})  ${color("dim", "default")}
+  ${color("cyan", "local, ollama")}   -> RTX Ollama  (${displayModel("local")})
   ${color("cyan", "grok, xai")}       -> xAI         (${displayModel("xai")})
   ${color("cyan", "claude")}          -> Anthropic   (${displayModel("anthropic")})
   ${color("cyan", "gpt-5, openai")}   -> OpenAI      (${displayModel("openai")})
@@ -588,7 +589,7 @@ ${color("bold", "PASTE & RUN")} (no shell-quoting; snippet read from stdin/hered
 
 ${color("bold", "REPL COMMANDS")}
   /model <m>     switch active analysis provider (local, ollama, grok, claude, gpt-5, gemini)
-  /code <text>   implement with the RTX Ollama agent (/code --claude … for Claude Code)
+  /code <text>   implement with the Bedrock agent (/code --claude … for Claude Code)
   /file <path>   load a file's contents into the next prompt
   /providers     list providers and mark the active one
   /providers <p> switch provider (local, ollama, grok, claude, gpt-5, gemini)
@@ -612,8 +613,9 @@ ${color("bold", "THEME")}
 }
 
 // Names the REPL accepts in `/providers <name>` and `/model <name>`.
-const PROVIDER_SWITCHES = "local, ollama, grok, claude, gpt-5, gemini";
+const PROVIDER_SWITCHES = "bedrock, local, ollama, grok, claude, gpt-5, gemini";
 const PROVIDER_SWITCH_ALIAS = {
+  bedrock: "bedrock",
   local: "local",
   anthropic: "claude",
   xai: "grok",
@@ -628,8 +630,8 @@ function applyActiveProvider(name) {
   if (name && resolveProvider(name)) {
     const provider = resolveProvider(name);
     console.log(color("dim", `Active provider -> ${name} · ${displayModel(provider)}`));
-    if (provider !== "local") {
-      console.log(color("dim", "Text only on this provider. /providers local edits code, browses, and checks the RTX."));
+    if (provider !== "local" && provider !== "bedrock") {
+      console.log(color("dim", "Text only on this provider. /providers bedrock edits code, runs commands, and browses."));
     }
     return name;
   }
@@ -643,6 +645,7 @@ function showProviders(activeAlias) {
   // default. `local` is keyless (self-hosted Ollama) — it's gated on the box
   // being reachable, not on a key, so it never shows "no key".
   const META = {
+    bedrock:   ["Bedrock",   null],
     local:     ["Local/GPU", null],
     anthropic: ["Anthropic", "ANTHROPIC_API_KEY"],
     xai:       ["xAI",       "XAI_API_KEY"],
@@ -658,7 +661,7 @@ function showProviders(activeAlias) {
     // it is keyless here even though KEY_ENV still names XAI_API_KEY.
     const viaCli = p === "xai" && useGrokCli();
     const status = (!env || viaCli)
-      ? color("green", viaCli ? "✓ grok CLI" : "✓ keyless")
+      ? color("green", viaCli ? "✓ grok CLI" : p === "bedrock" ? "✓ AWS SSO" : "✓ keyless")
       : (process.env[env] ? color("green", "✓ key set") : color("red", "✗ no key"));
     const mark = p === activeProvider ? color("accent", "●") : color("dim", "·");
     const sw = PROVIDER_SWITCH_ALIAS[p] || p;
@@ -670,7 +673,7 @@ function showProviders(activeAlias) {
   const claudeBin = process.env.CLAUDE_BIN || "claude";
   const codeAgent = /^(claude|anthropic)$/i.test(process.env.VKTECH_CODE_AGENT || "") ? "claude" : "local";
   console.log(`\n  ${color("chrome", "Code agent")} ${codeAgent === "local"
-    ? color("green", `RTX Ollama · ${displayModel("local")}`)
+    ? color("green", `Bedrock · ${displayModel("bedrock")}`)
     : color("yellow", "Claude Code")}`);
   console.log(color("dim", `  ollama ${LOCAL_URL} · ctx joins the loaded runner (else 32768) · --claude uses "${claudeBin}"`));
   console.log(`  ${color("dim", "theme:")} ${color("accent", THEME_NAME)} ${color("dim", "(VKTECH_THEME=violet|coral)")}\n`);
@@ -1296,13 +1299,20 @@ function parseCodeArgs(argv) {
   return { claude, dir, model, prompt: argv.slice(i).join(" ").trim() };
 }
 
-function ollamaModelId(model) {
-  if (!model || model === "local" || model === "ollama" || model === "self-hosted") return DEFAULTS.local;
-  if (resolveProvider(model) && resolveProvider(model) !== "local") return null;
+// The model id the coding agent runs: Bedrock by default, Ollama for
+// `local`/`ollama` or an Ollama id (qwen3.8:27b). null = a text-only provider.
+function agentModelId(model) {
+  if (!model) return DEFAULTS.bedrock;
+  if (model === "local" || model === "ollama" || model === "self-hosted") return DEFAULTS.local;
+  const provider = resolveProvider(model);
+  if (provider === "bedrock") return isProviderAlias(model) ? DEFAULTS.bedrock : model;
+  if (provider && provider !== "local") return null;
   return model;
 }
+const isProviderAlias = (m) => ["bedrock", "aws", "fable"].includes(String(m).toLowerCase());
+const agentLabel = (model) => (resolveProvider(model) === "bedrock" ? "bedrock" : "local");
 
-const CODE_USAGE = 'Usage: vktech code [--claude] [-d dir] [-m <ollama-model>] "<what to implement>"';
+const CODE_USAGE = 'Usage: vktech code [--claude] [-d dir] [-m <bedrock-id|local|ollama-model>] "<what to implement>"';
 
 async function executeCode(argv, { exitOnEnd = false } = {}) {
   const parsed = parseCodeArgs(argv);
@@ -1317,13 +1327,13 @@ async function executeCode(argv, { exitOnEnd = false } = {}) {
     if (exitOnEnd) process.exit(code);
     return;
   }
-  const model = ollamaModelId(parsed.model);
+  const model = agentModelId(parsed.model);
   if (!model) {
-    return fail(`vktech code runs on RTX Ollama. "${parsed.model}" is not a local model. Use --claude for Claude Code, or -m qwen3.8:27b.`);
+    return fail(`vktech code runs on Bedrock or RTX Ollama. "${parsed.model}" is neither. Use --claude for Claude Code, -m bedrock, or -m local.`);
   }
   const dir = resolvePath(parsed.dir);
   if (!existsSync(dir)) return fail(`Dir not found: ${dir}`);
-  console.log(color("magenta", `→ RTX Ollama agent (${model})\n`) + color("dim", `  ${dir}\n`));
+  console.log(color("magenta", `→ ${agentLabel(model) === "bedrock" ? "Bedrock" : "RTX Ollama"} agent (${model})\n`) + color("dim", `  ${dir}\n`));
   const t0 = Date.now();
   try {
     const result = await withQueryCancel((signal) => runLocalAgent({
@@ -1336,7 +1346,7 @@ async function executeCode(argv, { exitOnEnd = false } = {}) {
       write: (s) => process.stdout.write(s),
     }));
     if (result.files.length) console.log(color("green", `edited ${result.files.join(", ")}\n`));
-    statusFooter({ provider: "local", model: result.model, ms: Date.now() - t0, chars: result.text.length });
+    statusFooter({ provider: agentLabel(result.model), model: result.model, ms: Date.now() - t0, chars: result.text.length });
     if (exitOnEnd) process.exit(0);
   } catch (err) {
     if (err?.message === "cancelled") {
@@ -1388,14 +1398,14 @@ async function repl() {
   let pendingFile = "";
   let session = latestSession(cwd) || createSession(cwd);
   console.log(banner([
-    `${color("heading", "✦ vktech")} ${color("grey", "v" + version())} ${color("chrome", "— RTX agent")}`,
+    `${color("heading", "✦ vktech")} ${color("grey", "v" + version())} ${color("chrome", "— coding agent")}`,
     `${color("grey", "Type")} ${color("accent", "/help")} ${color("grey", "for commands,")} ${color("accent", "/exit")} ${color("grey", "to quit.")}`,
   ]));
   const bootProvider = activeModel ? resolveProvider(activeModel) : null;
   const bootLabel = bootProvider ? `${activeModel} · ${displayModel(bootProvider)}` : (activeModel || "none");
   console.log(color("dim", `Active: `) + color("chrome", bootLabel));
   console.log(color("dim", `Workspace: ${cwd}`));
-  console.log(color("dim", "Plain text edits code, runs commands, searches the web, and checks the RTX."));
+  console.log(color("dim", "Plain text edits code, runs commands, and searches the web."));
   if ((session.transcript || []).length) {
     console.log(color("dim", `Resumed "${session.title || "conversation"}" · ${session.transcript.length} messages. Scroll up to read it. /history lists others. /new starts fresh.`));
     printTranscript(session, { limit: 20 });
@@ -1552,7 +1562,7 @@ async function repl() {
     // first call still resumes this turn.
     saveSession(session);
     const t0 = Date.now();
-    const localTurn = resolveProvider(activeModel) === "local";
+    const localTurn = ["local", "bedrock"].includes(resolveProvider(activeModel));
     let liveText = "";
     const checkpoint = ({ phase, text, label, result, error }) => {
       if (phase === "assistant" && text) {
@@ -1574,10 +1584,10 @@ async function repl() {
     };
     try {
       if (localTurn) {
-        const model = ollamaModelId(activeModel) || DEFAULTS.local;
+        const model = agentModelId(activeModel) || DEFAULTS.bedrock;
         session.model = model;
         session.messages ||= [];
-        console.log(color("cyan", `\n[local:${model}]\n`));
+        console.log(color("cyan", `\n[${agentLabel(model)}:${model}]\n`));
         const result = await withQueryCancel((signal) => runLocalAgent({
           prompt: fullPrompt,
           cwd,
@@ -1591,7 +1601,7 @@ async function repl() {
         }));
         session.messages = result.messages;
         if (result.files.length) console.log(color("green", `edited ${result.files.join(", ")}\n`));
-        statusFooter({ provider: "local", model: result.model, ms: Date.now() - t0, chars: result.text.length });
+        statusFooter({ provider: agentLabel(result.model), model: result.model, ms: Date.now() - t0, chars: result.text.length });
       } else {
         const prior = (session.transcript || []).slice(0, -1).slice(-12)
           .map((turn) => `${turn.role}: ${String(turn.text).slice(0, 4000)}`)
