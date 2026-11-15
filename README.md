@@ -73,6 +73,20 @@ CLAUDE_BIN=claude          # only used by `vktech code --claude`
 
 Only the providers whose keys are set are used — `vktech providers` shows status.
 
+### vkPilot subscription (no AWS account needed)
+
+```
+vktech login     # pairs this machine with your vkPilot account (6-digit code in the browser)
+vktech whoami    # plan, models, usage this month
+vktech logout
+```
+
+When you are signed in, Claude calls go through the vkPilot relay
+(`https://pilot.vktech.ai/api/cli/v1/messages`, an Anthropic Messages-compatible endpoint).
+vkPilot runs the Bedrock calls and bills your plan. Your prompts and code context pass through
+vkPilot on the way to Bedrock. Plans: https://pilot.vktech.ai/vktech. `VKTECH_BEDROCK_DIRECT=1`
+skips the relay and uses your own AWS profile. The relay contract is in `docs/vkpilot-relay.md`.
+
 ### xAI via the `grok` CLI (default)
 
 `grok` requests shell out to the installed **`grok` CLI** rather than `api.x.ai`, so they

@@ -33,6 +33,7 @@ const { ask, askVision, askAll, availableProviders, PROVIDERS, DEFAULTS, resolve
 const { useGrokCli } = await import("./grok.js");
 const { runClaude } = await import("./claude.js");
 const { runLocalAgent, toolResultPreview } = await import("./agent.js");
+const { bedrockRoute } = await import("./bedrock.js");
 const { listTemplates, loadTemplate, buildPrompt } = await import("./templates.js");
 const { detectIndustry, INDUSTRIES } = await import("./industry.js");
 const { readSnippet, runLocalJs, runLocalShell, runRemote } = await import("./run.js");
@@ -548,6 +549,7 @@ ${color("bold", "USAGE")}
   vktech run                         Paste a JS snippet (Ctrl-D) → run with Node
   vktech sh                          Paste a shell snippet → run with bash
   vktech remote --host <h>           Paste a snippet → run on a host over SSH
+  vktech login | logout | whoami     Sign in to vkPilot so Claude runs on your subscription (no AWS account needed)
   vktech providers                   Show configured providers / keys
   vktech --help                      This help
   vktech --version
@@ -661,7 +663,7 @@ function showProviders(activeAlias) {
     // it is keyless here even though KEY_ENV still names XAI_API_KEY.
     const viaCli = p === "xai" && useGrokCli();
     const status = (!env || viaCli)
-      ? color("green", viaCli ? "✓ grok CLI" : p === "bedrock" ? "✓ AWS SSO" : "✓ keyless")
+      ? color("green", viaCli ? "✓ grok CLI" : p === "bedrock" ? (bedrockRoute() === "vkpilot" ? "✓ vkPilot" : "✓ AWS SSO") : "✓ keyless")
       : (process.env[env] ? color("green", "✓ key set") : color("red", "✗ no key"));
     const mark = p === activeProvider ? color("accent", "●") : color("dim", "·");
     const sw = PROVIDER_SWITCH_ALIAS[p] || p;
@@ -1728,6 +1730,41 @@ async function main() {
   }
 
   if (cmd === "code") return executeCode(argv.slice(1), { exitOnEnd: true });
+
+  if (cmd === "login") {
+    const { login } = await import("./vkpilot.js");
+    try {
+      const info = await login({ version: version(), noBrowser: argv.includes("--no-browser") });
+      console.log(color("green", `✓ Signed in${info.email ? ` as ${info.email}` : ""}${info.plan ? ` · ${info.plan}` : ""}.`)
+        + color("dim", " Claude calls now go through vkPilot."));
+    } catch (err) {
+      console.error(color("red", `Login failed: ${err.message}`));
+      process.exit(1);
+    }
+    return;
+  }
+  if (cmd === "logout") {
+    const { logout } = await import("./vkpilot.js");
+    console.log(logout() ? color("green", "✓ Signed out of vkPilot.") : color("dim", "Not signed in."));
+    return;
+  }
+  if (cmd === "whoami" || cmd === "account") {
+    const { me, SUBSCRIBE_URL } = await import("./vkpilot.js");
+    try {
+      const info = await me();
+      const u = info.usage || {};
+      console.log(`${color("chrome", info.email || "(unknown)")} · plan ${color("accent", info.plan || "none")}`);
+      if (u.includedUsd != null) {
+        console.log(color("dim", `usage $${Number(u.usedUsd || 0).toFixed(2)} of $${Number(u.includedUsd).toFixed(2)} included${u.resetsAt ? ` · resets ${u.resetsAt}` : ""}`));
+      }
+      if (info.models?.length) console.log(color("dim", `models: ${info.models.join(", ")} · default ${info.defaultModel || info.models[0]}`));
+      console.log(color("dim", `manage: ${SUBSCRIBE_URL}`));
+    } catch (err) {
+      console.error(color("red", err.message));
+      process.exit(1);
+    }
+    return;
+  }
 
   // No recognized command -> REPL (also handles bare `vktech`).
   if (!cmd) return repl();
