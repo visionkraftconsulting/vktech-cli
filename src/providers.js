@@ -3,8 +3,12 @@
 // Uses native global fetch (Node >=18).
 
 import { askGrokCli, useGrokCli } from "./grok.js";
+import { BEDROCK_MODEL, askBedrock, bedrockActiveModel, isBedrockModel } from "./bedrock.js";
 
 const DEFAULTS = {
+  // Claude on Amazon Bedrock (AWS SSO profile, see src/bedrock.js) — the
+  // DEFAULT provider and the model behind the REPL agent and `vktech code`.
+  bedrock: BEDROCK_MODEL,
   openai: process.env.OPENAI_MODEL || "gpt-5",
   gemini: process.env.GEMINI_MODEL || "gemini-2.5-pro",
   // In CLI mode leave this unset so the `grok` CLI picks its own current
@@ -88,6 +92,7 @@ function localBodyExtras(numCtx) {
 // `local` is a self-hosted Ollama vision model (zero per-call API cost) —
 // see LOCAL_VISION_URL / LOCAL_VISION_MODEL below.
 const VISION_DEFAULTS = {
+  bedrock: process.env.BEDROCK_VISION_MODEL || BEDROCK_MODEL,
   local: process.env.LOCAL_VISION_MODEL || "qwen2.5vl:7b",
   xai: process.env.XAI_VISION_MODEL || "grok-4.3",
   anthropic: process.env.ANTHROPIC_VISION_MODEL || "claude-opus-4-8",
@@ -102,7 +107,7 @@ const LOCAL_VISION_URL = process.env.LOCAL_VISION_URL || "http://100.80.136.28:1
 // back to paid APIs. This enforces strictly $0 per-call vision (the default
 // posture for this CLI). Set to false to allow the grok→claude→openai cascade.
 const VISION_LOCAL_ONLY = /^(1|true|yes)$/i.test(
-  process.env.VKTECH_VISION_LOCAL_ONLY || "true"
+  process.env.VKTECH_VISION_LOCAL_ONLY || "false"
 );
 export { VISION_LOCAL_ONLY };
 
@@ -112,11 +117,14 @@ export { VISION_LOCAL_ONLY };
 // VKTECH_VISION_PRIORITY="local,anthropic,openai,xai".
 const VISION_PRIORITY = (process.env.VKTECH_VISION_PRIORITY
   ? process.env.VKTECH_VISION_PRIORITY.split(",").map((s) => s.trim()).filter(Boolean)
-  : (VISION_LOCAL_ONLY ? ["local"] : ["local", "xai", "anthropic", "openai"]));
+  : (VISION_LOCAL_ONLY ? ["local"] : ["bedrock", "local"]));
 export { VISION_PRIORITY };
 
 // Map user-typed aliases to a canonical provider key.
 const ALIASES = {
+  bedrock: "bedrock",
+  aws: "bedrock",
+  fable: "bedrock",
   local: "local",
   ollama: "local",
   "self-hosted": "local",
@@ -145,7 +153,7 @@ const ALIASES = {
 // (claude→grok→gpt→gemini) follows for the heavier asks `local` can't carry.
 const PRIORITY = (process.env.VKTECH_PRIORITY
   ? process.env.VKTECH_PRIORITY.split(",").map((s) => s.trim()).filter(Boolean)
-  : ["local", "anthropic", "xai", "openai", "gemini"]);
+  : ["bedrock", "local", "anthropic", "xai", "openai", "gemini"]);
 export { PRIORITY };
 
 export function resolveProvider(modelArg) {
@@ -153,6 +161,7 @@ export function resolveProvider(modelArg) {
   const key = String(modelArg).toLowerCase().trim();
   // Allow either an alias or a fully-qualified model id matching a provider's family.
   if (ALIASES[key]) return ALIASES[key];
+  if (isBedrockModel(key)) return "bedrock";
   if (key.startsWith("gpt")) return "openai";
   if (key.startsWith("gemini")) return "gemini";
   if (key.startsWith("grok")) return "xai";
@@ -180,6 +189,7 @@ function modelIdFor(provider, modelArg) {
 // the REPL prompt. DEFAULTS.xai is deliberately null in grok-CLI mode (the CLI
 // picks its own default), so show that rather than printing "null".
 export function displayModel(provider) {
+  if (provider === "bedrock") return bedrockActiveModel();
   const id = DEFAULTS[provider];
   if (id) return id;
   if (provider === "xai" && useGrokCli()) return "grok CLI default";
@@ -489,7 +499,8 @@ const KEY_ENV = {
 // the rest require their API key. `local` (Ollama) is self-hosted, and `xai` in
 // CLI mode carries its own `grok login` auth — neither needs a key here.
 export function providerConfigured(provider) {
-  if (provider === "local") return true;
+  // Bedrock uses the AWS credential chain (SSO profile), not a key.
+  if (provider === "local" || provider === "bedrock") return true;
   if (provider === "xai" && useGrokCli()) return true;
   return !!process.env[KEY_ENV[provider]];
 }
@@ -497,7 +508,7 @@ export function providerConfigured(provider) {
 // True when a vision provider is usable. The grok CLI has no image-input path,
 // so xAI vision still needs XAI_API_KEY even when text runs through the CLI.
 function visionConfigured(provider) {
-  if (provider === "local") return true;
+  if (provider === "local" || provider === "bedrock") return true;
   return !!process.env[KEY_ENV[provider]];
 }
 
@@ -596,7 +607,7 @@ async function askLocalVision({ prompt, system, model, images, signal }) {
   return body?.message?.content?.trim() || "(empty response)";
 }
 
-const VISION_IMPL = { local: askLocalVision, xai: askXaiVision, anthropic: askAnthropicVision, openai: askOpenAIVision };
+const VISION_IMPL = { bedrock: askBedrock, local: askLocalVision, xai: askXaiVision, anthropic: askAnthropicVision, openai: askOpenAIVision };
 
 // Run a vision prompt, trying providers in VISION_PRIORITY (grok→claude→openai)
 // until one with a configured key succeeds. Returns { provider, model, text }.
@@ -625,7 +636,7 @@ export async function askVision({ prompt, system, images, modelArg, signal }) {
     const model = explicitId ? modelArg : VISION_DEFAULTS[provider];
     try {
       const text = await VISION_IMPL[provider]({ prompt, system, model, images, signal });
-      return { provider, model, text };
+      return { provider, model: provider === "bedrock" ? bedrockActiveModel() : model, text };
     } catch (e) {
       if (signal?.aborted) throw e;
       errors.push(`${provider} (${model}): ${e.message}`);
@@ -634,20 +645,22 @@ export async function askVision({ prompt, system, images, modelArg, signal }) {
   throw new Error(`All vision providers failed:\n  ${errors.join("\n  ")}`);
 }
 
-const IMPL = { openai: askOpenAI, gemini: askGemini, xai: askXai, anthropic: askAnthropic, local: askLocal };
+const IMPL = { bedrock: askBedrock, openai: askOpenAI, gemini: askGemini, xai: askXai, anthropic: askAnthropic, local: askLocal };
 
 export async function ask({ modelArg, prompt, system, signal }) {
   const provider = resolveProvider(modelArg);
   if (!provider) {
     throw new Error(
-      `Unknown model "${modelArg}". Use one of: local/ollama, grok/xai, claude/anthropic, gpt-5/openai, gemini (or an explicit model id like qwen3.8:27b or gpt-4o).`
+      `Unknown model "${modelArg}". Use one of: bedrock/fable, local/ollama, grok/xai, claude/anthropic, gpt-5/openai, gemini (or an explicit model id like qwen3.8:27b or gpt-4o).`
     );
   }
   const model = modelIdFor(provider, modelArg);
   const out = await IMPL[provider]({ prompt, system, model, signal });
   // `model` is null when the provider picks its own (grok CLI); report the
   // display label so callers never render "xai:null".
-  return { provider, model: model || displayModel(provider), text: out };
+  // Bedrock may have answered on a fallback model; report the one that ran.
+  const ran = provider === "bedrock" ? bedrockActiveModel() : model;
+  return { provider, model: ran || displayModel(provider), text: out };
 }
 
 // Runnable providers, returned in PRIORITY order (entries not in PRIORITY trail after).
@@ -673,7 +686,7 @@ export async function askAll({ prompt, system, providers, signal }) {
       const label = model || displayModel(provider);
       try {
         const text = await IMPL[provider]({ prompt, system, model, signal });
-        return { provider, model: label, ok: true, text };
+        return { provider, model: provider === "bedrock" ? bedrockActiveModel() : label, ok: true, text };
       } catch (err) {
         return { provider, model: label, ok: false, error: err.message };
       }

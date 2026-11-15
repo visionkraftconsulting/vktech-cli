@@ -1,8 +1,10 @@
 # vktech
 
-**Multi-provider AI analysis CLI & library** — query OpenAI, Google Gemini, xAI Grok, or the
-RTX 5090's Ollama for code and architecture analysis. Implementation defaults to that
-same Ollama agent (`qwen3.8:27b`). `--claude` still hands a prompt to
+**Multi-provider AI analysis CLI & library** — query Claude on Amazon Bedrock, OpenAI,
+Google Gemini, xAI Grok, or the RTX 5090's Ollama for code and architecture analysis.
+Implementation defaults to a Claude-on-Bedrock coding agent (Claude Fable 5.2, falling back
+to Opus 5.5, then Opus 4.6, when the AWS account has no access to the newer model).
+`-m local` runs the same agent on Ollama (`qwen3.8:27b`). `--claude` still hands a prompt to
 [Claude Code](https://claude.com/claude-code).
 
 ```
@@ -60,7 +62,11 @@ GEMINI_API_KEY=…
 OPENAI_MODEL=gpt-5
 GEMINI_MODEL=gemini-2.5-pro
 # XAI_MODEL=grok-4.6       # unset => let the grok CLI pick its default
-LOCAL_MODEL=qwen3.8:27b    # RTX Ollama model for analysis and `vktech code`
+BEDROCK_MODEL=us.anthropic.claude-fable-5-2   # default provider + `vktech code` agent
+# BEDROCK_FALLBACK_MODELS=us.anthropic.claude-opus-5-5,us.anthropic.claude-opus-4-6-v1
+# VKTECH_BEDROCK_PROFILE=vk-admin  VKTECH_BEDROCK_REGION=us-west-2  (AWS SSO; `aws sso login`)
+# VKTECH_BEDROCK_EFFORT=high       VKTECH_BEDROCK_CONTEXT_TOKENS=160000
+LOCAL_MODEL=qwen3.8:27b    # RTX Ollama model for `-m local`
 # LOCAL_NUM_CTX=32768      # unset = join the loaded runner; set only to force one
 CLAUDE_BIN=claude          # only used by `vktech code --claude`
 ```
@@ -163,11 +169,11 @@ yellow = open or waiting, green = done or healthy).
 | Command | Action |
 |---|---|
 | *(plain text)* | analyze with the active provider |
-| `/model <m>` | switch provider (`local`, `ollama`, `grok`, `claude`, `gpt-5`, `gemini`) |
+| `/model <m>` | switch provider (`bedrock`, `local`, `ollama`, `grok`, `claude`, `gpt-5`, `gemini`) |
 | `/file <path>` | load a file into the next prompt |
-| `/code <text>` | implement with the RTX Ollama agent (`/code --claude` for Claude Code) |
+| `/code <text>` | implement with the Bedrock agent (`/code --claude` for Claude Code) |
 | `/providers` | list providers and mark the active one |
-| `/providers <name>` | switch provider (`local`, `ollama`, `grok`, `claude`, `gpt-5`, `gemini`). Tools run on `local`. |
+| `/providers <name>` | switch provider (`bedrock`, `local`, `ollama`, `grok`, `claude`, `gpt-5`, `gemini`). Tools run on `bedrock` and `local`. |
 | `/history` | list saved conversations for this folder |
 | `/history <n>` | print that conversation and continue it |
 | `/new` | start a fresh conversation |
