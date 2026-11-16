@@ -3,6 +3,14 @@
 All notable changes to vktech are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-11-15
+
+### Fixed
+- The agent loads the global `~/.claude/CLAUDE.md` in full, budgeted before repo files. It was
+  being truncated. It also reads other CLIs' instruction files: `AGENTS.md`, `GEMINI.md`,
+  `GROK.md`, `.cursorrules` and `.github/copilot-instructions.md` per folder, plus
+  `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` and `~/.grok` globals.
+
 ## [1.3.0] - 2026-11-15
 
 ### Added

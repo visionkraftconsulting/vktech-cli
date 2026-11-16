@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { DEFAULTS, LOCAL_URL, localKeepAlive, localNumCtx, localTextOptions } from "./providers.js";
 import { BEDROCK_CONTEXT_TOKENS, bedrockChat, isBedrockModel } from "./bedrock.js";
 import { memoryBrief, memoriesForPrompt, readMemory, redactText } from "./memories.js";
@@ -657,7 +657,7 @@ function systemPrompt(cwd, numCtx = 32768, onBedrock = false) {
     "Earlier turns of this conversation are in the message history. Continue from them. When a follow-up question can be answered from facts or a report already in this conversation, answer from those first and say so, before running anything new.",
     `A running command's output is shown as it prints. Commands stop after ${Math.round(Number(process.env.VKTECH_AGENT_CMD_TIMEOUT_MS || 120_000) / 1000)} seconds unless you pass timeout_seconds (up to 3600 for deploys), and a timeout is a failure. Check status directly.`,
     "Ops access from this machine: aws (SSO profile vk-admin, us-west-2), doctl, and ssh to the hosts in ~/.ssh/config (e.g. ssh dell '<cmd>', sudo -n on the box). Commands have no terminal, so never use interactive forms (aws ssm start-session, ssh without a command, sudo prompting). Commands that change infrastructure (restarts, deploys, deletes, pushes, DB writes) ask the user to approve first. If one is declined, do not try another route to do the same thing.",
-    "Follow the CLAUDE.md instructions below. They are newer than the memories. When the two disagree, for example a memory names a host that has since moved, CLAUDE.md wins.",
+    "Follow the CLAUDE.md / AGENTS.md instructions below (the user's global ~/.claude/CLAUDE.md included). They are newer than the memories. When the two disagree, for example a memory names a host that has since moved, CLAUDE.md wins.",
     `Boxes with no inbound SSH are reached with the aws_ssm tool (configured: ${Object.keys(ssmHosts()).join(", ") || "none"}). CLAUDE.md says which app runs where. You DO have SSM access from this machine; never say you lack it unless aws_ssm returned an error, and then quote that error. A copy CLAUDE.md calls frozen or rollback-only is not live state.`,
     "If one approach fails twice, stop retrying it. Try a different route or report what blocked you.",
     "When the task is done, stop calling tools and write the report.",
@@ -671,7 +671,7 @@ function systemPrompt(cwd, numCtx = 32768, onBedrock = false) {
   // CLAUDE.md gets about a quarter of the context (≈3 chars/token), so a
   // 16k runner still leaves room for the task and the gathered facts.
   const instructionChars = Math.min(
-    Number(process.env.VKTECH_INSTRUCTIONS_CHARS || (onBedrock ? 64_000 : 28_000)),
+    Number(process.env.VKTECH_INSTRUCTIONS_CHARS || (onBedrock ? 120_000 : 28_000)),
     Math.max(4000, Math.floor(Number(numCtx) * 3 * 0.25)),
   );
   return `${rules}\n\n${REPORT_STYLE}\n\n${instructionFiles(cwd, instructionChars)}\n\n${memories}`;
@@ -692,37 +692,66 @@ const REPORT_STYLE = [
 // CLAUDE.md files hold the user's standing instructions and current facts
 // (prod hosts, deploy paths). The nearest project file goes first, then
 // parents, then ~/.claude/CLAUDE.md. Each is redacted and the total is capped.
-function instructionFiles(cwd, maxChars = Number(process.env.VKTECH_INSTRUCTIONS_CHARS || 28_000)) {
-  const files = [];
+// Standing instructions every CLI on this machine reads: per-folder files
+// from the cwd up to $HOME, then each CLI's global file. The global files are
+// budgeted first so a long repo file can never push them out.
+const FOLDER_FILES = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", "GROK.md", ".cursorrules", ".github/copilot-instructions.md"];
+function globalInstructionFiles(home) {
+  return [
+    join(home, ".claude", "CLAUDE.md"),
+    join(home, ".codex", "AGENTS.md"),
+    join(home, ".codex", "instructions.md"),
+    join(home, ".gemini", "GEMINI.md"),
+    join(home, ".grok", "AGENTS.md"),
+    join(home, ".grok", "GROK.md"),
+    join(home, ".cursor", "rules.md"),
+  ];
+}
+
+export function instructionFiles(cwd, maxChars = Number(process.env.VKTECH_INSTRUCTIONS_CHARS || 28_000)) {
   const home = homedir();
+  const folder = [];
   let dir = cwd;
   for (let i = 0; i < 12 && dir; i++) {
-    files.push(resolve(dir, "CLAUDE.md"));
+    for (const name of FOLDER_FILES) folder.push(resolve(dir, name));
     if (dir === home) break;
     const up = dirname(dir);
     if (up === dir) break;
     dir = up;
   }
-  files.push(resolve(home, ".claude", "CLAUDE.md"));
-  const parts = [];
-  let room = maxChars;
-  for (const file of [...new Set(files)]) {
-    if (room < 200 || !existsSync(file)) continue;
-    let body;
-    try {
-      body = redactText(readFileSync(file, "utf8")).trim();
-    } catch {
-      continue;
+  const read = (file) => {
+    if (!existsSync(file)) return "";
+    try { return redactText(readFileSync(file, "utf8")).trim(); } catch { return ""; }
+  };
+  const seen = new Set(); // same text via a symlink or copy is loaded once
+  const load = (files) => files.flatMap((file) => {
+    let real = file;
+    try { real = realpathSync(file); } catch { /* missing */ }
+    const body = read(file);
+    if (!body || seen.has(real) || seen.has(body)) return [];
+    seen.add(real).add(body);
+    return [{ file, body }];
+  });
+  const globals = load(globalInstructionFiles(home));
+  const local = load(folder);
+  const label = (file) => file.replace(home, "~");
+  const fit = (list, room) => {
+    const out = [];
+    for (const { file, body } of list) {
+      const head = `## ${basename(file)} · ${label(file)}\n`;
+      if (room < 200) { out.push(`${head}(not loaded: instruction budget used up; read it with read_file)`); continue; }
+      const slice = body.length + head.length > room ? `${body.slice(0, room - head.length - 60)}\n…(truncated; read the rest with read_file)` : body;
+      out.push(head + slice);
+      room -= head.length + slice.length;
     }
-    if (!body) continue;
-    const head = `## CLAUDE.md · ${file.replace(home, "~")}\n`;
-    const slice = body.length + head.length > room ? `${body.slice(0, room - head.length - 20)}\n…(truncated)` : body;
-    parts.push(head + slice);
-    room -= head.length + slice.length;
-  }
+    return { out, room };
+  };
+  const g = fit(globals, maxChars);
+  const l = fit(local, g.room);
+  const parts = [...l.out, ...g.out];
   return parts.length
-    ? `Standing instructions from CLAUDE.md files:\n\n${parts.join("\n\n")}`
-    : "No CLAUDE.md files were found.";
+    ? `Standing instructions from CLAUDE.md / AGENTS.md / GEMINI.md files (nearest folder first, then each CLI's global file):\n\n${parts.join("\n\n")}`
+    : "No CLAUDE.md or AGENTS.md files were found.";
 }
 
 const FACTS_RETRY = "No tools are available, and none are needed. The facts gathered from prod are in the previous user message. Write the report from those facts now, following the report rules.";
